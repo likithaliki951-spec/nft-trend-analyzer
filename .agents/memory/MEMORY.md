@@ -1,0 +1,1 @@
+- [NFT data provenance](nft-data-provenance.md) — Never present synthetic values as actual NFT or social-media data; keep synthetic examples explicitly labeled.
