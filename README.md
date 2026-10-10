@@ -1,0 +1,1 @@
+# nft-trend-analyzer
