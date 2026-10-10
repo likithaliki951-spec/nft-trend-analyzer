@@ -124,7 +124,7 @@ def show_price_chart(
         hovermode="x unified",
         legend_title_text="",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     return True
 
 
@@ -163,7 +163,7 @@ def show_activity_chart(
     st.caption(note)
     fig = px.bar(chart_data, x="Period", y="Value", title=title)
     fig.update_layout(xaxis_title="Date", yaxis_title=y_label)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     return True
 
 
@@ -189,7 +189,7 @@ def show_model_results(results: dict[str, Any]) -> None:
     metric_table = pd.DataFrame(metrics).T.rename_axis("Model").reset_index()
     st.dataframe(
         metric_table.style.format({"MAE": "{:.4f}", "RMSE": "{:.4f}", "R²": "{:.4f}"}),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
     st.caption(
@@ -229,7 +229,7 @@ def actual_predicted_chart(results: dict[str, Any]) -> None:
         yaxis_title="Price / target value",
         hovermode="x unified",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     scatter = go.Figure()
     for name, predictions in results["predictions"].items():
@@ -251,7 +251,7 @@ def actual_predicted_chart(results: dict[str, Any]) -> None:
         xaxis_title="Actual",
         yaxis_title="Predicted",
     )
-    st.plotly_chart(scatter, use_container_width=True)
+    st.plotly_chart(scatter, width="stretch")
 
 
 def train_for_selection(
@@ -299,7 +299,7 @@ with st.sidebar:
                 st.session_state["dataset"] = None
                 st.session_state["dataset_signature"] = signature
                 st.error(f"Could not read this CSV: {error}")
-    if st.button("Load generated synthetic demo", use_container_width=True):
+    if st.button("Load generated synthetic demo", width="stretch"):
         set_dataset(make_synthetic_demo_data(), "synthetic-demo-v1", "Synthetic educational demo")
     st.caption("The demo is generated for illustration; it is not actual NFT, OpenSea, or social-media data.")
 
@@ -331,7 +331,7 @@ if not isinstance(dataframe, pd.DataFrame) or dataframe.empty:
                 {"Analysis": "Model evaluation", "Useful fields": "At least 12 dated numeric target observations"},
             ]
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
     st.stop()
@@ -358,7 +358,7 @@ if nav_page == "NFT Market Overview":
 
     st.subheader("Dataset inspection")
     st.caption("Headers were trimmed, blank cells normalized to missing values, empty rows removed, and exact duplicates dropped.")
-    st.dataframe(inspect_table(dataframe), use_container_width=True, hide_index=True)
+    st.dataframe(inspect_table(dataframe), width="stretch", hide_index=True)
     st.subheader("Market snapshots")
     chart_left, chart_right = st.columns(2)
     with chart_left:
@@ -432,7 +432,7 @@ elif nav_page == "Social-Media Engagement":
                     totals = engagement.groupby("Metric", as_index=False)["Value"].sum()
                     fig = px.bar(totals, x="Metric", y="Value", title="Social metric totals in uploaded dataset")
                     fig.update_layout(xaxis_title="Metric", yaxis_title="Sum of uploaded values")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
                 st.caption(
                     "Only selected numeric columns from the uploaded file are shown. "
                     "This dashboard does not fetch or infer live social-media activity."
@@ -472,7 +472,7 @@ elif nav_page == "Model Evaluation":
                 **{f"{name} predicted": values for name, values in results["predictions"].items()},
             }
         )
-        st.dataframe(comparison, use_container_width=True, hide_index=True)
+        st.dataframe(comparison, width="stretch", hide_index=True)
         st.caption(
             "MAE and RMSE are in the target field's units. R² may be negative when predictions perform "
             "worse than predicting the test-set mean; it is not a percentage accuracy score."

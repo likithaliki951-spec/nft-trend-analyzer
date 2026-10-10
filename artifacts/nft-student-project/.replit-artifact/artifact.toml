@@ -1,0 +1,27 @@
+kind = "web"
+previewPath = "/"
+title = "NFT Student Project"
+description = "A Streamlit dashboard for inspecting user-uploaded NFT CSVs, exploring market and social-media time series, and evaluating leakage-safe price prediction models."
+version = "1.0.0"
+id = "artifacts/nft-student-project"
+router = "path"
+
+[[services]]
+name = "web"
+paths = ["/", "/_stcore/stream"]
+localPort = 19854
+
+[services.development]
+run = "uv run -- python ../../run_streamlit.py"
+
+[services.production]
+
+[services.production.build]
+args = ["uv", "sync", "--frozen"]
+
+[services.production.run]
+args = ["uv", "run", "--frozen", "--", "python", "../../run_streamlit.py"]
+
+[services.env]
+PORT = "19854"
+BASE_PATH = "/"

@@ -18,19 +18,7 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "NFT Student Project"
-
-[[workflows.workflow]]
-name = "NFT Student Project"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "uv run -- streamlit run app.py --server.port 5000 --server.address 0.0.0.0 --server.headless true"
-waitForPort = 5000
-
-[workflows.workflow.metadata]
-outputType = "webview"
+args = "artifacts/nft-student-project: web"
 
 [agent]
 stack = "PNPM_WORKSPACE"

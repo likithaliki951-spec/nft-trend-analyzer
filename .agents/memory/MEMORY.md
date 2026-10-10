@@ -1,1 +1,2 @@
 - [NFT data provenance](nft-data-provenance.md) — Never present synthetic values as actual NFT or social-media data; keep synthetic examples explicitly labeled.
+- [Replit preview routing](replit-preview-routing.md) — A running Streamlit process and port mapping alone do not create the root preview; register an artifact service route.
