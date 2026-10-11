@@ -14,9 +14,44 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 
-DATE_TERMS = ("date", "time", "timestamp", "created_at", "sold_at", "block_time")
-PRICE_TERMS = ("price", "amount", "sale_value", "floor")
-SALES_TERMS = ("sales", "sale_count", "transactions", "trades", "volume")
+DATE_TERMS = (
+    "date",
+    "time",
+    "timestamp",
+    "created_at",
+    "sold_at",
+    "block_time",
+    "datetime",
+    "tx_time",
+    "tx_date",
+    "day",
+    "period",
+    "transacted_at",
+)
+PRICE_TERMS = (
+    "price",
+    "amount",
+    "sale_value",
+    "floor",
+    "floor_price",
+    "last_sale",
+    "eth_price",
+    "usd_price",
+    "cost",
+    "value",
+)
+SALES_TERMS = (
+    "sales",
+    "sale_count",
+    "transactions",
+    "trades",
+    "volume",
+    "num_sales",
+    "tx_count",
+    "trade_count",
+    "quantity",
+    "tokens_sold",
+)
 SOCIAL_TERMS = (
     "like",
     "comment",
@@ -28,6 +63,11 @@ SOCIAL_TERMS = (
     "view",
     "engagement",
     "mention",
+    "upvote",
+    "tweet",
+    "post",
+    "favorite",
+    "subscriber",
 )
 USEFUL_LAG_TERMS = (
     "social",
@@ -50,13 +90,37 @@ USEFUL_LAG_TERMS = (
     "floor",
 )
 IDENTIFIER_TERMS = ("_id", "tokenid", "contract", "address", "hash", "index")
+ASSET_IDENTIFIER_TERMS = (
+    "token_id",
+    "tokenid",
+    "asset_id",
+    "item_id",
+    "nft_id",
+    "token",
+    "item",
+    "asset",
+    "collection",
+    "name",
+    "title",
+    "contract",
+)
 
 
 def clean_dataframe(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
     """Trim labels/strings, normalize blanks, and remove empty or duplicate rows."""
+    if dataframe.empty or len(dataframe.columns) == 0:
+        return dataframe.copy(), {
+            "rows_before_cleaning": len(dataframe),
+            "empty_rows_removed": 0,
+            "duplicate_rows_removed": 0,
+        }
+
     original_rows = len(dataframe)
     cleaned = dataframe.copy()
-    cleaned.columns = [str(column).strip() or f"unnamed_{i}" for i, column in enumerate(cleaned.columns)]
+    cleaned.columns = [
+        str(column).strip().replace("\r", "").replace("\n", "").replace("\t", "") or f"unnamed_{i}"
+        for i, column in enumerate(cleaned.columns)
+    ]
 
     # Duplicate header names make column selection ambiguous. Preserve each field
     # while assigning deterministic, human-readable suffixes.
@@ -84,17 +148,35 @@ def clean_dataframe(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, in
 
 
 def parse_numeric(values: pd.Series) -> pd.Series:
-    """Convert common currency-formatted values to numbers without fabricating values."""
+    """Convert currency-formatted strings, scientific notation, percentages, and tokens to numbers."""
     if pd.api.types.is_numeric_dtype(values):
         return pd.to_numeric(values, errors="coerce")
     text = values.astype("string").str.strip()
+    # Strip currency symbols and thousands commas
     text = text.str.replace(r"[$€£₹,]", "", regex=True)
+    # Strip leading or trailing crypto/fiat ticker tokens
+    text = text.str.replace(r"^\s*(?:WETH|ETH|BTC|SOL|USD|USDT)\s*", "", case=False, regex=True)
     text = text.str.replace(r"\s*(?:WETH|ETH|BTC|SOL|USD|USDT)\s*$", "", case=False, regex=True)
+    # Strip trailing percentage signs
+    text = text.str.replace(r"%\s*$", "", regex=True)
+    # Convert accounting parentheses for negative numbers, e.g. "(12.5)" -> "-12.5"
+    paren_mask = text.str.startswith("(") & text.str.endswith(")")
+    if paren_mask.any():
+        text = text.where(~paren_mask, "-" + text.str[1:-1].str.strip())
     return pd.to_numeric(text, errors="coerce")
 
 
 def parse_dates(values: pd.Series) -> pd.Series:
-    """Parse date-like values as timezone-naive UTC timestamps."""
+    """Parse date-like values as timezone-naive UTC timestamps, supporting ISO strings and Unix epochs."""
+    # Check if series is numeric and looks like Unix timestamps (seconds or milliseconds)
+    if pd.api.types.is_numeric_dtype(values):
+        valid_num = values.dropna()
+        if not valid_num.empty:
+            median_val = float(valid_num.median())
+            if 1e9 <= median_val <= 2.5e9:  # Epoch seconds (approx 2001 - 2049)
+                return pd.to_datetime(values, unit="s", errors="coerce", utc=True).dt.tz_convert(None)
+            elif 1e12 <= median_val <= 2.5e12:  # Epoch milliseconds
+                return pd.to_datetime(values, unit="ms", errors="coerce", utc=True).dt.tz_convert(None)
     parsed = pd.to_datetime(values, errors="coerce", utc=True)
     return parsed.dt.tz_convert(None)
 
@@ -110,7 +192,7 @@ def infer_column(dataframe: pd.DataFrame, kind: str) -> str | None:
 
     named_matches = []
     for column in dataframe.columns:
-        normalized = str(column).lower().replace(" ", "_")
+        normalized = str(column).lower().replace(" ", "_").replace("-", "_")
         if any(term in normalized for term in terms):
             named_matches.append(column)
     if named_matches:
@@ -239,6 +321,8 @@ def evaluate_models(
         "test_rows": len(x_test),
         "split_date": test_dates.iloc[0],
     }
+    results["feature_importances"] = {}
+    results["linear_coefficients"] = {}
     for model_name, factory in model_factories.items():
         model = factory()
         model.fit(x_train, y_train)
@@ -249,7 +333,128 @@ def evaluate_models(
             "RMSE": float(np.sqrt(mean_squared_error(y_test, predictions))),
             "R²": float(r2_score(y_test, predictions)) if len(y_test) >= 2 else float("nan"),
         }
+        regressor = model.named_steps["model"]
+        if hasattr(regressor, "feature_importances_"):
+            results["feature_importances"] = {
+                feat: float(imp)
+                for feat, imp in zip(features.columns, regressor.feature_importances_)
+            }
+        elif hasattr(regressor, "coef_"):
+            results["linear_coefficients"] = {
+                feat: float(coef)
+                for feat, coef in zip(features.columns, regressor.coef_)
+            }
+
+    results["residuals"] = {
+        m: (y_test.to_numpy() - preds)
+        for m, preds in results["predictions"].items()
+    }
+    results["train_dates"] = dates.iloc[:split_index].reset_index(drop=True)
     return results
+
+
+def count_unique_assets(dataframe: pd.DataFrame) -> tuple[int | None, str | None]:
+    """Identify the primary asset/NFT or collection column and return (unique_count, column_name)."""
+    for term in ASSET_IDENTIFIER_TERMS:
+        for column in dataframe.columns:
+            normalized = str(column).lower().replace(" ", "_")
+            if (
+                term == normalized
+                or normalized.startswith(f"{term}_")
+                or normalized.endswith(f"_{term}")
+                or term in normalized
+            ):
+                valid_count = int(dataframe[column].dropna().nunique())
+                if valid_count > 0:
+                    return valid_count, str(column)
+    return None, None
+
+
+def compute_market_kpis(
+    dataframe: pd.DataFrame, price_column: str | None, sales_column: str | None
+) -> dict[str, Any]:
+    """Compute verified market KPIs, trading volume support check, and data-quality diagnostics."""
+    kpis: dict[str, Any] = {
+        "valid_records": len(dataframe),
+        "avg_price": None,
+        "median_price": None,
+        "min_price": None,
+        "max_price": None,
+        "volume_supported": False,
+        "total_volume": None,
+        "volume_method": None,
+        "quality_warnings": [],
+    }
+
+    if price_column and price_column in dataframe:
+        prices = parse_numeric(dataframe[price_column])
+        valid_prices = prices.dropna()
+        if not valid_prices.empty:
+            kpis["avg_price"] = float(valid_prices.mean())
+            kpis["median_price"] = float(valid_prices.median())
+            kpis["min_price"] = float(valid_prices.min())
+            kpis["max_price"] = float(valid_prices.max())
+
+            missing_pct = float(prices.isna().mean() * 100)
+            if missing_pct > 10.0:
+                kpis["quality_warnings"].append(
+                    f"High missingness in '{price_column}': {missing_pct:.1f}% of rows have missing or unparseable price values."
+                )
+            neg_count = int((valid_prices < 0).sum())
+            if neg_count > 0:
+                kpis["quality_warnings"].append(
+                    f"Found {neg_count} negative value(s) in '{price_column}'. NFT prices should typically be non-negative."
+                )
+
+    if sales_column and sales_column in dataframe:
+        norm_sales = str(sales_column).lower().replace(" ", "_")
+        sales_numeric = parse_numeric(dataframe[sales_column])
+        valid_sales = sales_numeric.dropna()
+        if not valid_sales.empty:
+            if "volume" in norm_sales:
+                kpis["volume_supported"] = True
+                kpis["total_volume"] = float(valid_sales.sum())
+                kpis["volume_method"] = f"Direct sum of '{sales_column}'"
+            elif price_column and price_column in dataframe:
+                prices = parse_numeric(dataframe[price_column])
+                valid_pairs = prices.notna() & sales_numeric.notna() & np.isfinite(prices) & np.isfinite(sales_numeric)
+                if valid_pairs.any():
+                    kpis["volume_supported"] = True
+                    kpis["total_volume"] = float((prices.loc[valid_pairs] * sales_numeric.loc[valid_pairs]).sum())
+                    kpis["volume_method"] = f"Estimated as Price ('{price_column}') × Sales ('{sales_column}')"
+
+    return kpis
+
+
+def compute_engagement_correlations(
+    dataframe: pd.DataFrame, social_columns: list[str], target_columns: list[str]
+) -> pd.DataFrame:
+    """Compute Pearson correlation between engagement metrics and price/sales metrics."""
+    rows: list[dict[str, Any]] = []
+    for social in social_columns:
+        if social not in dataframe:
+            continue
+        s_vals = parse_numeric(dataframe[social])
+        for target in target_columns:
+            if not target or target not in dataframe:
+                continue
+            t_vals = parse_numeric(dataframe[target])
+            valid = s_vals.notna() & t_vals.notna() & np.isfinite(s_vals) & np.isfinite(t_vals)
+            count = int(valid.sum())
+            if count >= 3:
+                s_valid = s_vals.loc[valid].to_numpy(dtype=float)
+                t_valid = t_vals.loc[valid].to_numpy(dtype=float)
+                if np.std(s_valid) > 1e-9 and np.std(t_valid) > 1e-9:
+                    r = float(np.corrcoef(s_valid, t_valid)[0, 1])
+                    rows.append(
+                        {
+                            "Engagement Metric": social,
+                            "Market Metric": target,
+                            "Pearson Correlation": round(r, 4),
+                            "Observations": count,
+                        }
+                    )
+    return pd.DataFrame(rows)
 
 
 def make_synthetic_demo_data(rows: int = 120) -> pd.DataFrame:
