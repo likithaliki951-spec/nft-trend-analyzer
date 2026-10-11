@@ -1,4 +1,4 @@
-"""Interactive student dashboard for analysis of NFT time-series datasets."""
+"""Interactive research dashboard for analysis of trending NFT time-series datasets and machine learning."""
 
 from __future__ import annotations
 
@@ -14,17 +14,36 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from api_clients import (
+    convert_eth_to_usd,
+    get_current_eth_usd_price,
+    get_historical_eth_usd_price,
+    get_opensea_collection_stats,
+)
+from auth import (
+    get_current_user,
+    render_user_badge_and_logout,
+    require_authentication,
+)
+from ml_models import evaluate_extended_models
 from nft_analysis import (
     clean_dataframe,
     compute_engagement_correlations,
     compute_market_kpis,
     count_unique_assets,
     discover_social_columns,
-    evaluate_models,
     infer_column,
     make_synthetic_demo_data,
     parse_dates,
     parse_numeric,
+)
+from valuation_categories import (
+    DEFAULT_VALUATION_BANDS,
+    UNSOLD_LABEL,
+    categorize_prices,
+    compute_category_distribution,
+    evaluate_valuation_classifiers,
+    predict_single_valuation,
 )
 
 
@@ -35,6 +54,8 @@ PAGE_NAMES = (
     "Social-Media Engagement",
     "Price Prediction",
     "Model Evaluation",
+    "Valuation Categories",
+    "Live Market Intelligence",
 )
 NO_FIELD = "Not selected"
 
@@ -476,16 +497,20 @@ def inspect_table(dataframe: pd.DataFrame) -> pd.DataFrame:
 def show_model_results(results: dict[str, Any]) -> None:
     metrics = results["metrics"]
     metric_table = pd.DataFrame(metrics).T.rename_axis("Model").reset_index()
+
+    # Append training times if tracked
+    if results.get("training_times"):
+        metric_table["Training Time (s)"] = metric_table["Model"].map(results["training_times"])
+
     st.dataframe(
-        metric_table.style.format({"MAE": "{:.4f}", "RMSE": "{:.4f}", "R²": "{:.4f}"}),
+        metric_table.style.format({"MAE": "{:.4f}", "RMSE": "{:.4f}", "R²": "{:.4f}", "Training Time (s)": "{:.4f}"}),
         width="stretch",
         hide_index=True,
     )
     st.caption(
         f"Chronological split: {results['training_rows']:,} training rows followed by "
         f"{results['test_rows']:,} test rows, beginning {results['split_date']:%Y-%m-%d}. "
-        "No shuffled split was used. Test predictions are rolling one-step-ahead forecasts "
-        "using only prior observations as history."
+        "No shuffled split was used. Predictions are rolling one-step-ahead forecasts using only prior history."
     )
     st.caption(f"Features used: {', '.join(results['features'])}")
 
@@ -504,7 +529,12 @@ def actual_predicted_chart(results: dict[str, Any]) -> None:
             marker=dict(size=5),
         )
     )
-    colors = {"Linear Regression": "#38bdf8", "Random Forest": "#8b5cf6"}
+    colors = {
+        "Linear Regression": "#38bdf8",
+        "Random Forest": "#8b5cf6",
+        "Support Vector Regressor (SVR)": "#10b981",
+        "GRU Hybrid Model": "#f59e0b",
+    }
     for name, predictions in results["predictions"].items():
         all_values.append(np.asarray(predictions))
         fig.add_trace(
@@ -516,7 +546,7 @@ def actual_predicted_chart(results: dict[str, Any]) -> None:
                 line=dict(
                     color=colors.get(name, "#10b981"),
                     width=2,
-                    dash="dash" if name == "Linear Regression" else "solid",
+                    dash="dash" if "Linear" in name else "solid",
                 ),
                 marker=dict(size=4),
             )
@@ -571,7 +601,7 @@ def train_for_selection(
         st.warning("Select a numeric price/target field to train models.")
         return None
     try:
-        return evaluate_models(dataframe, date_column, target_column)
+        return evaluate_extended_models(dataframe, date_column, target_column)
     except ValueError as error:
         st.info(str(error))
     except Exception as error:  # Keep malformed user uploads from crashing the dashboard.
@@ -595,6 +625,9 @@ def read_uploaded_csv(file_bytes: bytes) -> pd.DataFrame:
 # Inject custom styling
 inject_custom_theme()
 
+# Enforce authentication on every rerun (halts with st.stop() if not logged in)
+authenticated_user = require_authentication()
+
 st.title(PROJECT_TITLE)
 st.caption(
     "A research-oriented dashboard for exploring NFT market time series, social engagement, "
@@ -602,6 +635,8 @@ st.caption(
 )
 
 with st.sidebar:
+    render_user_badge_and_logout(authenticated_user)
+    st.divider()
     st.markdown("### 🧭 Navigation & Data")
     uploaded_file = st.file_uploader(
         "Upload a CSV dataset",
@@ -671,7 +706,15 @@ if not isinstance(dataframe, pd.DataFrame) or dataframe.empty:
                 </div>
                 <div class="empty-feature-item">
                     <div class="empty-feature-title">🤖 Predictive Modeling</div>
-                    <div class="empty-feature-text">Chronological 80/20 train/test evaluation with Linear Regression & Random Forest.</div>
+                    <div class="empty-feature-text">Multi-model benchmark: Linear Regression, Random Forest, SVR, and GRU Hybrid.</div>
+                </div>
+                <div class="empty-feature-item">
+                    <div class="empty-feature-title">🏷️ Valuation Categories</div>
+                    <div class="empty-feature-text">Classify assets into structured price bands via Random Forest and SVM classifiers.</div>
+                </div>
+                <div class="empty-feature-item">
+                    <div class="empty-feature-title">🌐 Live Intelligence</div>
+                    <div class="empty-feature-text">Live spot rates and historical price context via CoinGecko and OpenSea API v2.</div>
                 </div>
             </div>
         </div>
@@ -686,6 +729,8 @@ if not isinstance(dataframe, pd.DataFrame) or dataframe.empty:
                 {"Analysis": "Market activity", "Useful fields": "A date/time field and a sales, trade, or volume field"},
                 {"Analysis": "Social engagement", "Useful fields": "Numeric likes, comments, views, shares, or engagement"},
                 {"Analysis": "Model evaluation", "Useful fields": "At least 12 dated numeric target observations"},
+                {"Analysis": "Valuation categories", "Useful fields": "Numeric price field and optional transaction flag"},
+                {"Analysis": "Live marketplace hub", "Useful fields": "OpenSea collection slug and optional API credentials"},
             ]
         ),
         width="stretch",
@@ -704,6 +749,9 @@ if st.session_state.get("dataset_source") == "Synthetic educational demo":
         unsafe_allow_html=True,
     )
 
+# ==============================================================================
+# Page 1: NFT Market Overview
+# ==============================================================================
 if nav_page == "NFT Market Overview":
     st.header("NFT Market Overview")
     stats = st.session_state.get("cleaning_stats", {})
@@ -762,6 +810,9 @@ if nav_page == "NFT Market Overview":
     with chart_right:
         show_activity_chart(dataframe, date_column, sales_column, frequency)
 
+# ==============================================================================
+# Page 2: Time-Series Analysis
+# ==============================================================================
 elif nav_page == "Time-Series Analysis":
     st.header("Time-Series Analysis")
     st.write(
@@ -771,7 +822,6 @@ elif nav_page == "Time-Series Analysis":
 
     numeric_columns = [col for col in dataframe.columns if parse_numeric(dataframe[col]).notna().any()]
 
-    # Control bar for time-series filters
     ctrl_col1, ctrl_col2, ctrl_col3 = st.columns(3)
     with ctrl_col1:
         ts_metric = st.selectbox(
@@ -790,7 +840,6 @@ elif nav_page == "Time-Series Analysis":
     with ctrl_col3:
         ts_interval = st.selectbox("Interval aggregation", ("Daily", "Weekly", "Monthly"), index=0)
 
-    # Date range filtering
     start_date = None
     end_date = None
     if date_column and date_column in dataframe:
@@ -810,7 +859,6 @@ elif nav_page == "Time-Series Analysis":
             else:
                 st.caption(f"Single date available: {min_d}")
 
-    # Primary Time-Series Chart
     show_price_chart(
         dataframe,
         date_column,
@@ -821,7 +869,6 @@ elif nav_page == "Time-Series Analysis":
         end_date=end_date,
     )
 
-    # Activity and Volume Bar Chart
     st.subheader("Recorded market activity")
     show_activity_chart(
         dataframe,
@@ -832,6 +879,9 @@ elif nav_page == "Time-Series Analysis":
         end_date=end_date,
     )
 
+# ==============================================================================
+# Page 3: Social-Media Engagement
+# ==============================================================================
 elif nav_page == "Social-Media Engagement":
     st.header("Social-Media Engagement Analysis")
     st.markdown(
@@ -863,7 +913,6 @@ elif nav_page == "Social-Media Engagement":
         if not selected_social:
             st.info("Select at least one detected engagement metric.")
         else:
-            # 1. Social engagement trend over time
             long_data = []
             for column in selected_social:
                 values = parse_numeric(dataframe[column])
@@ -920,7 +969,6 @@ elif nav_page == "Social-Media Engagement":
                     )
                 st.plotly_chart(fig, width="stretch")
 
-            # 2. Cross-Metric Comparison & Scatter Plots
             st.subheader("Cross-metric comparison: Engagement vs. Market Price / Sales")
             target_candidates = [col for col in [price_column, sales_column] if col and col in dataframe]
             if not target_candidates:
@@ -974,7 +1022,6 @@ elif nav_page == "Social-Media Engagement":
                 else:
                     st.warning("Insufficient overlapping records between chosen engagement and market metrics.")
 
-            # 3. Correlation Analysis Matrix
             st.subheader("Statistical Correlation Matrix (Pearson r)")
             corr_df = compute_engagement_correlations(dataframe, selected_social, target_candidates)
             if not corr_df.empty:
@@ -990,6 +1037,9 @@ elif nav_page == "Social-Media Engagement":
             else:
                 st.info("Insufficient paired data points to compute correlation matrix.")
 
+# ==============================================================================
+# Page 4: Price Prediction
+# ==============================================================================
 elif nav_page == "Price Prediction":
     st.header("Price Prediction")
     st.markdown(
@@ -1006,7 +1056,8 @@ elif nav_page == "Price Prediction":
     st.write(
         "Models predict the target variable one observation ahead using chronological feature history. "
         "Features include calendar indices and lagged values strictly prior to the prediction timestamp "
-        "to prevent data leakage."
+        "to prevent target leakage. Evaluates Linear Regression, Random Forest, Support Vector Regression (SVR), "
+        "and a GRU Hybrid recurrent sequence model where data depth permits."
     )
 
     numeric_columns = [col for col in dataframe.columns if parse_numeric(dataframe[col]).notna().any()]
@@ -1019,14 +1070,29 @@ elif nav_page == "Price Prediction":
 
     results = train_for_selection(dataframe, date_column, pred_target)
     if results:
+        # Display GRU Sequence Status Callout
+        gru_info = results.get("gru_status", {})
+        if gru_info.get("available"):
+            st.markdown(
+                '<div class="status-pill-active">● GRU Hybrid Model Active (Chronological multi-step sequence encoder)</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            reason = gru_info.get("reason", "Sequence depth requirement not met.")
+            st.caption(f"ℹ️ GRU Sequence Model: {reason}")
+
         show_model_results(results)
         actual_predicted_chart(results)
 
         # Feature Importance Analysis for Random Forest
-        if results.get("feature_importances"):
+        rf_pipe = None
+        from nft_analysis import evaluate_models
+        # Feature importances from standard evaluate_models if available
+        base_res = evaluate_models(dataframe, date_column, pred_target)
+        if base_res.get("feature_importances"):
             st.subheader("Random Forest Feature Importance")
             feat_df = (
-                pd.DataFrame(list(results["feature_importances"].items()), columns=["Feature", "Importance"])
+                pd.DataFrame(list(base_res["feature_importances"].items()), columns=["Feature", "Importance"])
                 .sort_values("Importance", ascending=True)
             )
             feat_fig = px.bar(feat_df, x="Importance", y="Feature", orientation="h")
@@ -1039,15 +1105,14 @@ elif nav_page == "Price Prediction":
                 height=320,
             )
             st.plotly_chart(feat_fig, width="stretch")
-            st.caption(
-                "Higher importance values indicate features that contributed most heavily "
-                "to splitting decisions across the decision trees."
-            )
 
+# ==============================================================================
+# Page 5: Model Evaluation
+# ==============================================================================
 elif nav_page == "Model Evaluation":
     st.header("Model Evaluation")
     st.write(
-        "Both models are benchmarked using a strict chronological 80/20 train/test evaluation. "
+        "All regression models are benchmarked using a strict chronological 80/20 train/test evaluation. "
         "Earlier observations train the algorithms, and the most recent 20% of chronological records "
         "are held out as an unseen test benchmark."
     )
@@ -1062,8 +1127,7 @@ elif nav_page == "Model Evaluation":
 
     results = train_for_selection(dataframe, date_column, eval_target)
     if results:
-        # Visual Metric Comparison Chart
-        st.subheader("Model Performance Comparison")
+        st.subheader("Multi-Model Regression Comparison")
         metrics_dict = results["metrics"]
         metric_rows = []
         for model_name, m_vals in metrics_dict.items():
@@ -1079,60 +1143,58 @@ elif nav_page == "Model Evaluation":
                 y="Score",
                 color="Model",
                 barmode="group",
-                title="Error Metric Comparison (Lower is Better)",
+                title="Regression Error Comparison (Lower is Better)",
             )
-            apply_chart_theme(comp_fig, height=320)
+            apply_chart_theme(comp_fig, height=330)
             st.plotly_chart(comp_fig, width="stretch")
         with col_table:
-            st.write("**Evaluation Metrics Table**")
+            st.write("**Evaluation Metrics & Compute Time**")
             show_model_results(results)
 
-        # Educational Metric Explanations
         with st.expander("📖 Metric Interpretation & Technical Definitions"):
             st.markdown(
                 """
-                - **MAE (Mean Absolute Error):** The average absolute difference between predicted and actual values. 
-                  Expressed directly in the target column's unit. Less sensitive to extreme outliers than RMSE.
-                - **RMSE (Root Mean Squared Error):** The square root of mean squared errors. Because errors are squared, 
-                  large errors are heavily penalized.
-                - **R² (Coefficient of Determination):** Measures the proportion of variance explained by the model relative 
-                  to a naive horizontal line predicting the test set mean. **Can be negative** if predictions perform worse 
-                  than merely predicting the mean. It is **not** a percentage accuracy score.
+                - **MAE (Mean Absolute Error):** Average absolute magnitude of errors in target units. Less sensitive to outliers.
+                - **RMSE (Root Mean Squared Error):** Square root of mean squared errors. Heavily penalizes large prediction errors.
+                - **R² (Coefficient of Determination):** Proportion of variance explained relative to a horizontal line predicting the test set mean. Can be negative if the model predicts worse than the simple historical average.
+                - **Support Vector Regressor (SVR):** RBF kernel regression with epsilon-insensitive loss margin.
+                - **GRU Hybrid Model:** Recurrent sequence encoder paired with tabular features for multi-step temporal context.
                 """
             )
 
-        # Held-out actual vs predicted
         st.subheader("Held-out test predictions")
         actual_predicted_chart(results)
 
-        # Residual Error Analysis
         if results.get("residuals"):
             st.subheader("Residual Analysis (Actual − Predicted)")
             res_fig = go.Figure()
+            colors_map = {
+                "Linear Regression": "#38bdf8",
+                "Random Forest": "#8b5cf6",
+                "Support Vector Regressor (SVR)": "#10b981",
+                "GRU Hybrid Model": "#f59e0b",
+            }
             for m_name, res_vals in results["residuals"].items():
                 res_fig.add_trace(
                     go.Scatter(
                         x=results["dates"],
                         y=res_vals,
                         mode="lines+markers",
-                        name=f"{m_name} residuals",
+                        name=f"{m_name}",
+                        line=dict(color=colors_map.get(m_name, "#cbd5e1")),
                         marker=dict(size=4),
                     )
                 )
             res_fig.add_hline(y=0, line_dash="dash", line_color="#94a3b8")
             apply_chart_theme(
                 res_fig,
-                title="Residuals Across Held-Out Test Window",
+                title="Residual Errors Across Held-Out Test Window",
                 xaxis_title="Date",
                 yaxis_title="Residual Error",
                 height=320,
             )
             st.plotly_chart(res_fig, width="stretch")
-            st.caption(
-                "A well-calibrated model exhibits residuals randomly dispersed around zero without systematic bias."
-            )
 
-        # Tabular Comparison
         comparison = pd.DataFrame(
             {
                 "Date": results["dates"],
@@ -1141,3 +1203,259 @@ elif nav_page == "Model Evaluation":
             }
         )
         st.dataframe(comparison, width="stretch", hide_index=True)
+
+# ==============================================================================
+# Page 6: NFT Valuation Categories (NEW)
+# ==============================================================================
+elif nav_page == "Valuation Categories":
+    st.header("NFT Valuation Categories")
+    st.markdown(
+        """
+        <div class="research-callout">
+            <b>🏷️ Valuation Category Framework:</b> 
+            Classifies assets into structured, contiguous price bands without conflating unsold assets with zero-price sales. 
+            Evaluates <b>Random Forest Classifier</b> and <b>Support Vector Machine (SVM)</b> classifiers on an 
+            80/20 chronological split to benchmark category estimation.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    numeric_columns = [col for col in dataframe.columns if parse_numeric(dataframe[col]).notna().any()]
+    val_target = st.selectbox(
+        "Valuation Price Column",
+        numeric_columns,
+        index=numeric_columns.index(price_column) if price_column in numeric_columns else 0,
+        help="Select column containing NFT prices to categorize.",
+    )
+
+    col_curr1, col_curr2 = st.columns(2)
+    with col_curr1:
+        currency_mode = st.radio("Base Pricing Unit", ["USD", "ETH"], horizontal=True)
+    with col_curr2:
+        eth_rate = 2600.0
+        if currency_mode == "ETH":
+            st.caption("Live CoinGecko rate query:")
+            cg_res = get_current_eth_usd_price()
+            if cg_res.get("status") == "success" and cg_res.get("rate_usd"):
+                eth_rate = float(cg_res["rate_usd"])
+                st.write(f"Spot ETH/USD: **${eth_rate:,.2f}** ({cg_res.get('source')})")
+            else:
+                eth_rate = st.number_input("Custom ETH/USD rate", min_value=1.0, value=2600.0, step=50.0)
+
+    # 1. Category Distribution
+    st.subheader("Observed Valuation Category Distribution")
+    raw_prices = parse_numeric(dataframe[val_target])
+    assigned_cats = categorize_prices(
+        raw_prices,
+        currency=currency_mode,
+        eth_usd_rate=eth_rate if currency_mode == "ETH" else None,
+    )
+    dist_df = compute_category_distribution(assigned_cats)
+
+    col_dist_chart, col_dist_table = st.columns([3, 2])
+    with col_dist_chart:
+        dist_fig = px.bar(
+            dist_df,
+            x="Valuation Category",
+            y="Count",
+            color="Valuation Category",
+            title="Frequency Across Valuation Brackets",
+        )
+        apply_chart_theme(dist_fig, height=320)
+        st.plotly_chart(dist_fig, width="stretch")
+    with col_dist_table:
+        st.write("**Category Breakdown Table**")
+        st.dataframe(dist_df, width="stretch", hide_index=True)
+
+    # 2. Classifier Benchmarking
+    st.subheader("Supervised Valuation Category Classification")
+    st.write(
+        "Trains Random Forest and Support Vector Machine (SVM) classifiers to predict price category "
+        "one observation ahead using calendar features and lagged history."
+    )
+
+    try:
+        clf_results = evaluate_valuation_classifiers(
+            dataframe,
+            date_column,
+            val_target,
+            currency=currency_mode,
+            eth_usd_rate=eth_rate if currency_mode == "ETH" else None,
+        )
+
+        clf_metrics_df = pd.DataFrame(clf_results["metrics"]).T.reset_index().rename(columns={"index": "Model"})
+        st.dataframe(
+            clf_metrics_df.style.format(
+                {
+                    "Accuracy": "{:.4f}",
+                    "Balanced Accuracy": "{:.4f}",
+                    "Macro Precision": "{:.4f}",
+                    "Macro Recall": "{:.4f}",
+                    "Macro F1": "{:.4f}",
+                    "Weighted F1": "{:.4f}",
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+
+        # Confusion Matrix Display
+        st.subheader("Confusion Matrix Benchmark")
+        cm_col1, cm_col2 = st.columns(2)
+        classes_labels = clf_results["classes"]
+        with cm_col1:
+            cm_rf = clf_results["confusion_matrices"]["Random Forest Classifier"]
+            fig_rf = px.imshow(
+                cm_rf,
+                labels=dict(x="Predicted Category", y="Actual Category", color="Records"),
+                x=classes_labels,
+                y=classes_labels,
+                text_auto=True,
+                color_continuous_scale="Purples",
+                title="Random Forest Confusion Matrix",
+            )
+            apply_chart_theme(fig_rf, height=360)
+            st.plotly_chart(fig_rf, width="stretch")
+        with cm_col2:
+            cm_svm = clf_results["confusion_matrices"]["Support Vector Classifier (SVM)"]
+            fig_svm = px.imshow(
+                cm_svm,
+                labels=dict(x="Predicted Category", y="Actual Category", color="Records"),
+                x=classes_labels,
+                y=classes_labels,
+                text_auto=True,
+                color_continuous_scale="Blues",
+                title="Support Vector Machine (SVM) Confusion Matrix",
+            )
+            apply_chart_theme(fig_svm, height=360)
+            st.plotly_chart(fig_svm, width="stretch")
+
+        # 3. Interactive Valuation Estimator
+        st.subheader("Interactive Valuation Category Estimator")
+        st.write("Simulate asset valuation tier prediction for specific historical lag and calendar inputs:")
+        features_list = clf_results["features"]
+        rf_pipe = clf_results["trained_pipelines"]["Random Forest Classifier"]
+
+        input_cols = st.columns(min(4, len(features_list)))
+        sample_inputs = {}
+        for idx, feat_name in enumerate(features_list[:4]):
+            col_target = input_cols[idx % len(input_cols)]
+            with col_target:
+                sample_inputs[feat_name] = st.number_input(
+                    f"Feature: {feat_name}",
+                    value=float(dataframe[val_target].dropna().median()) if "lag" in feat_name else 1.0,
+                    step=0.5,
+                )
+
+        if st.button("Predict Valuation Category", width="stretch"):
+            val_pred = predict_single_valuation(rf_pipe, sample_inputs, features_list)
+            st.success(f"Estimated Valuation Tier: **{val_pred['predicted_category']}**")
+            if val_pred.get("class_probabilities"):
+                prob_df = pd.DataFrame(
+                    list(val_pred["class_probabilities"].items()), columns=["Category", "Estimated Probability"]
+                )
+                prob_fig = px.bar(prob_df, x="Category", y="Estimated Probability", color="Category")
+                apply_chart_theme(prob_fig, title="Estimated Category Class Probabilities", height=280)
+                st.plotly_chart(prob_fig, width="stretch")
+            st.caption(f"⚠️ {val_pred['disclaimer']}")
+
+    except ValueError as err:
+        st.info(f"Valuation classification notice: {err}")
+    except Exception as err:
+        st.error(f"Valuation classification error: {err}")
+
+# ==============================================================================
+# Page 7: Live Market Intelligence (NEW)
+# ==============================================================================
+elif nav_page == "Live Market Intelligence":
+    st.header("Live Market Intelligence & Currency Hub")
+    st.markdown(
+        """
+        <div class="research-callout">
+            <b>🌐 External Market Context:</b> 
+            Connects to official public endpoints for <b>CoinGecko</b> (ETH/USD spot and historical exchange rates) 
+            and <b>OpenSea API v2</b> (collection floor prices and supply metadata). Operates with in-memory caching, 
+            timeout guards, and transparent offline fallback when credentials are absent.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    tab_cg, tab_os = st.tabs(["🪙 CoinGecko Currency Hub", "🌊 OpenSea Marketplace Explorer"])
+
+    with tab_cg:
+        st.subheader("CoinGecko Live & Historical Exchange Rates")
+        cg_kpi1, cg_kpi2, cg_kpi3 = st.columns(3)
+
+        cg_current = get_current_eth_usd_price()
+        with cg_kpi1:
+            if cg_current.get("status") == "success" and cg_current.get("rate_usd"):
+                render_kpi("ETH / USD Spot Rate", f"${cg_current['rate_usd']:,.2f}", cg_current.get("source", "Live"))
+            else:
+                render_kpi("ETH / USD Spot Rate", "Unavailable", cg_current.get("message", "Offline / Rate limited"))
+        with cg_kpi2:
+            render_kpi("Query Timestamp", cg_current.get("timestamp", "—")[:19], "UTC")
+        with cg_kpi3:
+            render_kpi("Cached Status", "Active" if cg_current.get("is_cached") else "Live Query", "TTL: 5 Minutes")
+
+        st.divider()
+        st.write("**Interactive Currency Converter (ETH $\\rightarrow$ USD)**")
+        conv_c1, conv_c2, conv_c3 = st.columns(3)
+        with conv_c1:
+            input_eth = st.number_input("Amount in ETH", min_value=0.001, value=1.0, step=0.1)
+        with conv_c2:
+            use_hist = st.checkbox("Match to Historical Date")
+            hist_date = None
+            if use_hist:
+                hist_date = st.date_input("Historical Conversion Date", value=datetime.date.today())
+        with conv_c3:
+            conv_res = convert_eth_to_usd(input_eth, historical_date=hist_date)
+            st.metric("Converted USD Value", f"${conv_res['usd_amount']:,.2f}", conv_res.get("rate_type"))
+
+    with tab_os:
+        st.subheader("OpenSea Collection Intelligence (API v2)")
+        st.write(
+            "Query verified collection metadata and floor prices directly from OpenSea's official API endpoints. "
+            "Requires an optional `OPENSEA_API_KEY` in environment variables or Streamlit secrets."
+        )
+
+        col_search1, col_search2 = st.columns([3, 1])
+        with col_search1:
+            collection_slug = st.text_input(
+                "OpenSea Collection Slug",
+                value="boredapeyachtclub",
+                help="Identifier slug from OpenSea URL (e.g. 'boredapeyachtclub', 'doodles-official', 'azuki')",
+            )
+        with col_search2:
+            st.write("")
+            st.write("")
+            fetch_btn = st.button("Fetch Live Data", width="stretch")
+
+        if fetch_btn or collection_slug:
+            os_res = get_opensea_collection_stats(collection_slug)
+            if os_res.get("status") == "success":
+                st.success(f"Retrieved data for **{os_res.get('name')}** ({os_res.get('source')})")
+                os_kpi1, os_kpi2, os_kpi3 = st.columns(3)
+                with os_kpi1:
+                    floor_val = os_res.get("floor_price")
+                    render_kpi("Floor Price", f"{floor_val:.4f} ETH" if floor_val else "N/A", "Active marketplace floor")
+                with os_kpi2:
+                    render_kpi("Total Supply", f"{os_res.get('total_supply', 0):,}", "Minted NFT count")
+                with os_kpi3:
+                    render_kpi("Retrieval Time", os_res.get("retrieval_time", "—")[:19], "UTC Timestamp")
+                st.write(f"**Description:** {os_res.get('description')}")
+            elif os_res.get("status") == "no_credentials":
+                st.info(f"ℹ️ **OpenSea API Notice:** {os_res.get('message')}")
+                st.caption(os_res.get("guide", ""))
+                st.markdown(
+                    """
+                    <div class="empty-feature-item">
+                        <b>Offline Demonstration Fallback:</b> Without an API key, the dashboard runs in full offline mode. 
+                        All CSV time series, pricing predictions, and valuation models operate with zero cloud dependency.
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.warning(f"Notice: {os_res.get('message')}")
