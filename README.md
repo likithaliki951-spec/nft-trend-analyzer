@@ -268,7 +268,7 @@ The test suite validates password hashing, registration validation, duplicate pr
 python -m pytest -v
 ```
 
-**Results: 78 passed tests** across unit functions and Streamlit `AppTest` harnesses with zero failures.
+**Results: 81 passed tests** across unit functions and Streamlit `AppTest` harnesses with zero failures.
 
 ---
 
@@ -293,7 +293,7 @@ NFT-Trend-Analyzer/
 ├── tests/
 │   ├── test_auth.py                  # Unit tests for password hashing, session tokens, rotation, AppTest auth gates (24 tests)
 │   ├── test_user_store.py            # Unit tests for registration, Supabase cloud error mock tests, SQLite persistence (17 tests)
-│   ├── test_data_loader.py           # Unit tests for CSV, Excel, JSON, JSONL, Parquet, TXT, and diagnostics (10 tests)
+│   ├── test_data_loader.py           # Unit tests for CSV, Excel, JSON, JSONL, Parquet, TXT, optional fallbacks (13 tests)
 │   ├── test_extended_capabilities.py # Unit tests for GRU, SVR, classifiers, and API clients (13 tests)
 │   ├── test_nft_analysis.py          # Unit tests for data cleaning, parsing, metrics, and models (13 tests)
 │   └── test_dashboard_pages.py       # Streamlit AppTest headless render verification for all 7 pages (1 test)

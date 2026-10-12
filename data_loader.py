@@ -12,8 +12,14 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import openpyxl  # noqa: F401 - verifies Excel engine is available
 import pandas as pd
+
+try:
+    import openpyxl  # noqa: F401
+    HAS_OPENPYXL = True
+except ImportError:
+    openpyxl = None  # type: ignore
+    HAS_OPENPYXL = False
 
 from nft_analysis import (
     DATE_TERMS,
@@ -38,6 +44,8 @@ def get_file_extension(filename: str) -> str:
 
 def get_excel_sheet_names(file_bytes: bytes) -> list[str]:
     """Inspect and return the sheet names in an Excel workbook."""
+    if not HAS_OPENPYXL:
+        return []
     try:
         excel_file = pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl")
         return list(excel_file.sheet_names)
@@ -185,6 +193,11 @@ def load_uploaded_dataset(
     if ext == ".csv":
         raw_df = read_csv_with_fallback(file_bytes)
     elif ext in (".xlsx", ".xls"):
+        if not HAS_OPENPYXL:
+            raise ImportError(
+                "Excel file support requires the 'openpyxl' package. "
+                "Please ensure 'openpyxl' is installed or upload your dataset in CSV, JSON, Parquet, or TXT format."
+            )
         sheets = get_excel_sheet_names(file_bytes)
         target_sheet = sheet_name if sheet_name and sheet_name in sheets else (sheets[0] if sheets else 0)
         sheet_used = str(target_sheet)
@@ -196,6 +209,11 @@ def load_uploaded_dataset(
     elif ext == ".parquet":
         try:
             raw_df = pd.read_parquet(io.BytesIO(file_bytes))
+        except ImportError as exc:
+            raise ImportError(
+                "Parquet file support requires the 'pyarrow' package. "
+                "Please ensure 'pyarrow' is installed or upload your dataset in CSV, Excel, or JSON format."
+            ) from exc
         except Exception as exc:
             raise ValueError(f"Could not read Parquet dataset: {exc}")
     elif ext == ".txt":

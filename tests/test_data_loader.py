@@ -2,6 +2,7 @@
 
 import io
 import json
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -174,3 +175,23 @@ def test_generate_sample_nft_csv_and_export():
     assert isinstance(exported_bytes, bytes)
     reloaded_df = pd.read_csv(io.BytesIO(exported_bytes))
     assert len(reloaded_df) == len(df)
+
+
+def test_load_excel_without_openpyxl_raises_graceful_import_error():
+    """When openpyxl is not available, loading Excel raises a friendly ImportError."""
+    with patch("data_loader.HAS_OPENPYXL", False):
+        with pytest.raises(ImportError, match="requires the 'openpyxl' package"):
+            load_uploaded_dataset(b"dummy excel bytes", "test.xlsx")
+
+
+def test_get_excel_sheet_names_without_openpyxl_returns_empty():
+    """When openpyxl is not available, sheet inspection returns an empty list without error."""
+    with patch("data_loader.HAS_OPENPYXL", False):
+        assert get_excel_sheet_names(b"dummy excel bytes") == []
+
+
+def test_load_parquet_without_pyarrow_raises_graceful_import_error():
+    """When pyarrow is missing, loading Parquet raises a friendly ImportError."""
+    with patch("pandas.read_parquet", side_effect=ImportError("No module named 'pyarrow'")):
+        with pytest.raises(ImportError, match="requires the 'pyarrow' package"):
+            load_uploaded_dataset(b"dummy parquet bytes", "test.parquet")

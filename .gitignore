@@ -64,3 +64,4 @@ secrets.toml
 .streamlit/*.db
 *.backup
 *.bak
+uv.lock
