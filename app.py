@@ -25,6 +25,15 @@ from auth import (
     render_user_badge_and_logout,
     require_authentication,
 )
+from data_loader import (
+    SUPPORTED_EXTENSIONS,
+    export_dataframe_as_csv,
+    generate_sample_nft_csv,
+    get_excel_sheet_names,
+    get_file_extension,
+    load_uploaded_dataset,
+    validate_and_diagnose_dataset,
+)
 from ml_models import evaluate_extended_models
 from nft_analysis import (
     clean_dataframe,
@@ -247,6 +256,7 @@ def apply_chart_theme(
 ) -> go.Figure:
     """Apply a unified dark-mode Plotly theme with charcoal/navy backdrop and violet/blue accents."""
     fig.update_layout(
+        autosize=True,
         template="plotly_dark",
         paper_bgcolor="rgba(0, 0, 0, 0)",
         plot_bgcolor="#111827",
@@ -306,6 +316,7 @@ def set_dataset(dataframe: pd.DataFrame, signature: str, source_label: str) -> N
     st.session_state["date_col"] = infer_column(cleaned, "date") or NO_FIELD
     st.session_state["price_col"] = infer_column(cleaned, "price") or NO_FIELD
     st.session_state["sales_col"] = infer_column(cleaned, "sales") or NO_FIELD
+    st.session_state["dataset_diagnostics"] = validate_and_diagnose_dataset(cleaned)
 
 
 def field_options(columns: list[str]) -> list[str]:
@@ -610,16 +621,9 @@ def train_for_selection(
 
 
 def read_uploaded_csv(file_bytes: bytes) -> pd.DataFrame:
-    """Read CSV bytes with robust multi-encoding and delimiter fallback."""
-    for encoding in ("utf-8", "utf-8-sig", "latin-1", "cp1252"):
-        for sep in (",", ";", "\t"):
-            try:
-                df = pd.read_csv(io.BytesIO(file_bytes), encoding=encoding, sep=sep)
-                if len(df.columns) > 1 or len(file_bytes) < 80:
-                    return df
-            except (UnicodeDecodeError, pd.errors.ParserError):
-                continue
-    return pd.read_csv(io.BytesIO(file_bytes))
+    """Read CSV bytes with robust multi-encoding and delimiter fallback (backwards compatibility)."""
+    from data_loader import read_csv_with_fallback
+    return read_csv_with_fallback(file_bytes)
 
 
 # Inject custom styling
@@ -639,27 +643,45 @@ with st.sidebar:
     st.divider()
     st.markdown("### 🧭 Navigation & Data")
     uploaded_file = st.file_uploader(
-        "Upload a CSV dataset",
-        type=["csv"],
-        help="Column names and sample values are inspected after upload. Your file is held strictly in this session.",
-        max_upload_size=200,
+        "Upload dataset (CSV, Excel, JSON, JSONL, Parquet, TXT)",
+        type=["csv", "xlsx", "xls", "json", "jsonl", "parquet", "txt"],
+        help="Upload NFT time-series or valuation data. Supported formats: .csv, .xlsx, .xls, .json, .jsonl, .parquet, and .txt. Files are held strictly in this authenticated session.",
     )
+    sheet_choice = None
+    if uploaded_file is not None and get_file_extension(uploaded_file.name) in (".xlsx", ".xls"):
+        sheets = get_excel_sheet_names(uploaded_file.getvalue())
+        if len(sheets) > 1:
+            sheet_choice = st.selectbox("Select Excel worksheet", sheets, key="excel_sheet_selector")
+
     if uploaded_file is not None:
         file_bytes = uploaded_file.getvalue()
-        signature = hashlib.sha256(file_bytes).hexdigest()
+        cache_key_data = file_bytes + (sheet_choice.encode("utf-8") if sheet_choice else b"")
+        signature = hashlib.sha256(cache_key_data).hexdigest()
         if st.session_state.get("dataset_signature") != signature:
             try:
-                raw_dataframe = read_uploaded_csv(file_bytes)
-                if raw_dataframe.empty and len(raw_dataframe.columns) == 0:
-                    raise ValueError("The CSV has no header or data columns.")
+                raw_dataframe, meta = load_uploaded_dataset(file_bytes, uploaded_file.name, sheet_name=sheet_choice)
                 set_dataset(raw_dataframe, signature, f"Uploaded: {uploaded_file.name}")
+                st.session_state["upload_metadata"] = meta
+                st.success(f"Loaded {meta['clean_rows']:,} rows from {meta['extension'].upper()} ({meta['size_formatted']})")
             except Exception as error:
                 st.session_state["dataset"] = None
                 st.session_state["dataset_signature"] = signature
-                st.error(f"Could not read this CSV: {error}")
-    if st.button("⚡ Load generated synthetic demo", width="stretch"):
-        set_dataset(make_synthetic_demo_data(), "synthetic-demo-v1", "Synthetic educational demo")
-    st.caption("The demo is generated for illustration; it is not actual NFT, OpenSea, or social-media data.")
+                st.error(f"Could not load this file: {error}")
+
+    col_demo, col_tpl = st.columns([1, 1])
+    with col_demo:
+        if st.button("⚡ Load demo data", width="stretch"):
+            set_dataset(make_synthetic_demo_data(), "synthetic-demo-v1", "Synthetic educational demo")
+    with col_tpl:
+        st.download_button(
+            "📄 CSV Template",
+            data=generate_sample_nft_csv(),
+            file_name="nft_sample_template.csv",
+            mime="text/csv",
+            width="stretch",
+            help="Download a sample CSV formatted to the application's expected NFT schema.",
+        )
+    st.caption("Demo generated for benchmarking; real NFT analyses require uploaded records.")
 
     dataframe = st.session_state.get("dataset")
     if isinstance(dataframe, pd.DataFrame) and not dataframe.empty:
@@ -669,6 +691,25 @@ with st.sidebar:
         st.selectbox("Date / time", field_options(columns), key="date_col")
         st.selectbox("Price / target", field_options(columns), key="price_col")
         st.selectbox("Sales / activity", field_options(columns), key="sales_col")
+
+        # Export normalized CSV button
+        st.download_button(
+            "📤 Export normalized CSV",
+            data=export_dataframe_as_csv(dataframe),
+            file_name=f"normalized_nft_{st.session_state.get('dataset_signature', 'export')[:8]}.csv",
+            mime="text/csv",
+            width="stretch",
+            help="Download the currently cleaned and normalized dataset as standard CSV.",
+        )
+
+        # ML Diagnostics badge
+        diag = st.session_state.get("dataset_diagnostics")
+        if diag:
+            if diag.get("ml_ready"):
+                st.caption(f"✓ **ML Ready**: {diag.get('ml_status_message')}")
+            else:
+                st.caption(f"⚠️ **Notice**: {diag.get('ml_status_message')}")
+
         st.divider()
         nav_page = st.radio("Dashboard pages", PAGE_NAMES, label_visibility="visible")
         source_label = st.session_state.get("dataset_source", "Dataset")
@@ -679,7 +720,7 @@ with st.sidebar:
     else:
         st.divider()
         nav_page = st.radio("Dashboard pages", PAGE_NAMES, label_visibility="visible")
-        st.caption("Upload a CSV or choose the generated synthetic demo to begin.")
+        st.caption("Upload a supported dataset or choose the synthetic demo to begin.")
 
 dataframe = st.session_state.get("dataset")
 if not isinstance(dataframe, pd.DataFrame) or dataframe.empty:

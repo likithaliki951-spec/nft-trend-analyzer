@@ -247,3 +247,145 @@ def test_interactive_login_form_submission_on_localhost():
     dashboard_title = "Analysis of Trending NFTs Using Time-Series Data and Machine Learning"
     assert any(title.value == dashboard_title for title in app.title)
     assert AUTH_SESSION_KEY in app.session_state
+
+
+def test_authenticate_registered_user_from_db(tmp_path):
+    """Verify that a newly registered user in an isolated persistent store can log in successfully."""
+    import uuid
+    from user_store import init_sqlite_db, register_user
+
+    test_db = tmp_path / "auth_test.db"
+    init_sqlite_db(test_db)
+
+    test_email = f"analyst_{uuid.uuid4().hex[:8]}@nfttrends.io"
+    test_password = "RegisteredPass2026!"
+
+    # Register user into isolated database
+    reg_ok, msg = register_user(
+        test_email,
+        "Registered Analyst",
+        test_password,
+        test_password,
+        db_path=test_db,
+    )
+    assert reg_ok is True, f"Registration failed: {msg}"
+
+    # Authenticate user from isolated database
+    auth_ok, user_data = authenticate_user(test_email, test_password, db_path=test_db)
+    assert auth_ok is True
+    assert isinstance(user_data, dict)
+    assert user_data["email"] == test_email
+    assert user_data["role"] == "analyst"
+
+    # Reject invalid password for registered user
+    fail_ok, fail_msg = authenticate_user(test_email, "WrongPassword!", db_path=test_db)
+    assert fail_ok is False
+    assert "Invalid email address or password" in str(fail_msg)
+
+
+def test_production_mode_detection():
+    """Verify is_production_mode detects cloud environment variables and secret settings."""
+    from auth import is_production_mode
+
+    # Local dev defaults to False
+    with patch.dict("os.environ", {}, clear=True):
+        assert is_production_mode() is False
+
+    # Environment variables
+    with patch.dict("os.environ", {"STREAMLIT_COMMUNITY_CLOUD": "1"}):
+        assert is_production_mode() is True
+
+    with patch.dict("os.environ", {"ENV": "production"}):
+        assert is_production_mode() is True
+
+
+def test_production_rejects_missing_cookie_secret():
+    """Production mode must raise RuntimeError if cookie secret is missing."""
+    import pytest
+    from auth import get_cookie_secret
+
+    with patch("auth.is_production_mode", return_value=True):
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("auth._load_disk_secrets", return_value={}):
+                with patch("streamlit.secrets", {}, create=True):
+                    with pytest.raises(RuntimeError, match="Production deployment requires a configured"):
+                        get_cookie_secret()
+
+
+def test_production_rejects_compromised_cookie_secret():
+    """Production mode must reject previously exposed compromised secrets."""
+    import pytest
+    from auth import get_cookie_secret
+
+    compromised = "4f8a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a"
+    mock_secrets = {"auth": {"cookie_secret": compromised}}
+
+    with patch("auth.is_production_mode", return_value=True):
+        with patch("streamlit.secrets", mock_secrets, create=True):
+            with pytest.raises(RuntimeError, match="compromised"):
+                get_cookie_secret()
+
+
+def test_production_rejects_placeholder_cookie_secret():
+    """Production mode must reject template placeholder secrets."""
+    import pytest
+    from auth import get_cookie_secret
+
+    mock_secrets = {"auth": {"cookie_secret": "replace-with-a-random-hex-string-run-openssl-rand-hex-32"}}
+
+    with patch("auth.is_production_mode", return_value=True):
+        with patch("streamlit.secrets", mock_secrets, create=True):
+            with pytest.raises(RuntimeError, match="placeholder"):
+                get_cookie_secret()
+
+
+def test_production_accepts_valid_rotated_secret():
+    """Production mode accepts a secure rotated 32-byte (64-hex-char) secret."""
+    from auth import get_cookie_secret
+
+    valid_secret = "a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcdef0"
+    mock_secrets = {"auth": {"cookie_secret": valid_secret}}
+
+    with patch("auth.is_production_mode", return_value=True):
+        with patch("streamlit.secrets", mock_secrets, create=True):
+            sec = get_cookie_secret()
+            assert sec == valid_secret
+
+
+def test_local_dev_ephemeral_fallback():
+    """Local development safely derives an in-process ephemeral secret without crashing."""
+    from auth import get_cookie_secret
+
+    with patch("auth.is_production_mode", return_value=False):
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("auth._load_disk_secrets", return_value={}):
+                with patch("streamlit.secrets", {}, create=True):
+                    sec = get_cookie_secret()
+                    assert isinstance(sec, str)
+                    assert len(sec) == 64
+
+
+def test_authenticate_propagates_database_permission_error():
+    """When the cloud database denies access (HTTP 401/403), authenticate_user returns a clear message."""
+    from auth import authenticate_user
+    import user_store
+
+    with patch("auth.get_configured_users", return_value={}):
+        with patch("user_store.get_registered_user", side_effect=user_store.DatabasePermissionError("401 Unauthorized")):
+            ok, msg = authenticate_user("analyst@firm.com", "SecretPass123!")
+            assert ok is False
+            assert "Authentication service unavailable" in str(msg)
+            assert "permission error" in str(msg).lower()
+
+
+def test_authenticate_propagates_database_connection_error():
+    """When the cloud database times out or is unreachable, authenticate_user returns an explicit error."""
+    from auth import authenticate_user
+    import user_store
+
+    with patch("auth.get_configured_users", return_value={}):
+        with patch("user_store.get_registered_user", side_effect=user_store.DatabaseConnectionError("Connection timed out")):
+            ok, msg = authenticate_user("analyst@firm.com", "SecretPass123!")
+            assert ok is False
+            assert "Authentication service unavailable" in str(msg)
+            assert "connection error" in str(msg).lower()

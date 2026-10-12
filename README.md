@@ -7,7 +7,7 @@
 A research-oriented analytics, machine-learning benchmarking, and valuation categorization dashboard for Non-Fungible Token (NFT) transaction datasets. Built with Python and Streamlit, this application features a professional login portal, leak-free chronological time-series analysis, cross-metric social engagement correlations, multi-model price forecasting (Linear Regression, Random Forest, SVR, and pure-NumPy GRU Hybrid), and live marketplace intelligence.
 
 > [!IMPORTANT]
-> **Authentication Guard**: All seven dashboard pages and dataset processing pipelines are protected behind a secure login barrier. Unauthenticated requests are halted at execution start (`st.stop()`) and cannot inspect uploaded CSV files, model artifacts, or private market metrics.
+> **Authentication Guard**: All seven dashboard pages and dataset processing pipelines are protected behind a secure login barrier. Unauthenticated requests are halted at execution start (`st.stop()`) and cannot inspect uploaded files, model artifacts, or private market metrics.
 
 ---
 
@@ -16,14 +16,16 @@ A research-oriented analytics, machine-learning benchmarking, and valuation cate
 The dashboard uses a research-grade dark theme:
 - **Palette**: Deep charcoal/navy background (`#0b0f19`), secondary slate cards (`#131b2e`), with subtle violet (`#8b5cf6`) and electric-blue (`#38bdf8`) accents.
 - **KPI Metrics**: Restrained cards displaying key performance indicators, summary statistics, and data-quality notices.
-- **Interactive Visualizations**: Unified Plotly dark theme with subtle gridlines, dark tooltip overlays, and high-contrast trace colors.
-- **Layout**: Fully responsive layout designed for desktop terminals and smaller screens with sidebar navigation and a persistent session indicator.
+- **Interactive Visualizations**: Full-container-width Plotly charts with automatic layout responsiveness (`autosize=True`), subtle gridlines, dark tooltip overlays, and high-contrast trace colors.
+- **Layout**: Wide layout mode (`layout="wide"`) optimized for multi-resolution desktop research terminals and mobile viewports.
 
 ---
 
-## 🔒 Authentication & Access Control
+## 🔒 Complete Registration & Authentication System
 
-The authentication architecture (`auth.py`) is designed for production readiness without requiring paid external subscription plans (such as Supabase):
+The application features a unified, dual-tab access portal (`auth.py` and `user_store.py`) providing:
+1. **Sign In**: Email and password authentication with show/hide password toggle.
+2. **Create Account**: Public analyst registration with input validation, password strength enforcement, and duplicate prevention.
 
 ```
                    Unauthenticated Visitor
@@ -38,24 +40,38 @@ The authentication architecture (`auth.py`) is designed for production readiness
             ▼                                 ▼
    [Invalid / Missing Token]         [Valid Session Token]
             │                                 │
-   Render Dark Login Card                     ▼
-   (Email / Password or SSO)         Allow Dashboard Access
-            │                        (All 7 Analysis Pages)
+   Render Dark Portal Card                    ▼
+   ├─ Tab 1: 🔑 Sign In              Allow Dashboard Access
+   ├─ Tab 2: 📝 Create Account       (All 7 Analysis Pages)
+   └─ Single Sign-On (OIDC)
+            │
             ▼
         st.stop()
 ```
 
-### Security Specifications
-1. **Password Hashing (NIST SP 800-63B)**: Passwords are never stored in plaintext. Passwords use PBKDF2-HMAC-SHA256 with 600,000 iterations and a cryptographically unique 16-byte random salt per user.
-2. **Cryptographic Session Tokens**: Active sessions are signed using HMAC-SHA256 with a secret key (`cookie_secret`), payload expiration timestamp, and random nonce. Verified using constant-time comparison (`hmac.compare_digest`) to prevent timing attacks.
-3. **Session Expiration**: Expired tokens are invalidated automatically, displaying a user-friendly expiration notice and requiring re-authentication.
-4. **Single Sign-On (OIDC)**: Compatible with Streamlit's native OpenID Connect (`st.login()` / `st.user`) when configured in secrets.
-5. **Zero-Data Leakage**: The entire dashboard (sidebar, navigation, file uploader, charts, and models) is halted with `st.stop()` prior to script execution if the user is unauthenticated.
+### Registration Security & Policies
+- **Input Validation**: Enforces full display names ($\ge 2$ characters), RFC 5322 email syntax, and matching password confirmations.
+- **Password Strength**: Minimum 8 characters with at least one letter and at least one digit or special character.
+- **No Role Escalation**: Public registrations are strictly assigned `role='analyst'`; administrator privileges cannot be self-selected.
+- **Duplicate Prevention**: Email addresses are normalized (trimmed and lowercased) and verified under a re-entrant thread mutex (`threading.RLock`) and database unique constraint.
+- **Generic Login Errors**: Authentication failures return a uniform `"Invalid email address or password"` error to prevent account enumeration.
 
-### Production Credentials via Streamlit Secrets
-User accounts are defined in Streamlit secrets (`[credentials.users]`). If secrets are not yet configured, the app displays a clear setup message instructing the administrator to configure credentials, rather than permitting unauthorized or unverified guest access.
+### Persistent Account Storage Backends
+Streamlit Community Cloud operates on ephemeral containers where the local filesystem does not persist across restarts. The user storage layer (`user_store.py`) dynamically detects the active environment:
 
-To configure your administrator account, see the [Streamlit Secrets Configuration](#streamlit-secrets-configuration) section below.
+1. **Persistent Cloud Database (Supabase REST API)**:
+   - For Streamlit Community Cloud deployments, configure your Supabase project in Streamlit Secrets.
+   - Run the included idempotent migration script [`supabase_migration.sql`](supabase_migration.sql) in your **Supabase Dashboard -> SQL Editor**.
+   - The script creates `registered_users`, enables **Row Level Security (RLS)**, and creates a case-insensitive index `idx_registered_users_lower_email` on `LOWER(TRIM(email))`.
+   - **Service Role Key vs. Anon Key**: In Streamlit Secrets, configure `[supabase.service_role_key]`. Because Streamlit Community Cloud executes as a secure server-side process, the `service_role` key allows user registration and authentication while bypassing RLS safely. Client-side visitors cannot inspect or download user password hashes via the public anon endpoint (HTTP 401/403).
+2. **Local Development Storage (SQLite)**:
+   - When Supabase credentials are not configured, the app automatically initializes `.streamlit/users.db`.
+   - The UI displays an informative status badge (`💾 Local SQLite Database`) explaining how to enable persistent cloud storage.
+   - `.streamlit/users.db` is strictly ignored by `.gitignore`.
+
+### Administrator Accounts via Streamlit Secrets
+Pre-configured system administrators defined in `.streamlit/secrets.toml` or Streamlit Cloud Secrets (`[credentials.users]`) take priority over database accounts and cannot be overwritten by registration.
+
 
 ---
 
@@ -114,30 +130,56 @@ To configure your administrator account, see the [Streamlit Secrets Configuratio
 
 ---
 
+## 📁 Multi-Format Dataset Ingestion & Validation
+
+The application features a reusable ingestion and normalization pipeline (`data_loader.py`):
+
+| Format | Extensions | Capabilities & Structure |
+|---|---|---|
+| **CSV** | `.csv` | Multi-encoding fallback (`utf-8`, `latin-1`, `cp1252`) and multi-delimiter autodetection (`,`, `;`, `\t`, `\|`). |
+| **Excel** | `.xlsx`, `.xls` | OpenPyXL engine, multi-sheet workbook inspection, and interactive worksheet selector. |
+| **JSON** | `.json` | Array of records, column-oriented dictionaries, and wrapped API response payloads (`data`, `records`, `results`). |
+| **JSON Lines** | `.jsonl` | Line-by-line streaming JSON object parser with line-number error reporting. |
+| **Apache Parquet** | `.parquet` | High-efficiency columnar binary dataset reading via PyArrow. |
+| **Delimited Text** | `.txt` | Tab, pipe (`\|`), comma, or semicolon-delimited tabular records. |
+
+### Schema Normalization & Diagnostics
+- **Column Normalization**: Cleans whitespace, drops empty columns, and resolves duplicate header names deterministically (`col`, `col_2`).
+- **Data Quality Diagnostics**: Automatic KPI reporting for unparseable timestamps, missing value percentages, and negative price anomalies.
+- **ML Readiness Verification**: Evaluates whether the dataset contains $\ge 12$ chronological observations with valid dates and numeric prices, reporting actionable guidance in the sidebar.
+- **Templates & Export**: One-click download of canonical NFT CSV templates and instant export of cleaned, normalized datasets.
+
+---
+
 ## Streamlit Secrets Configuration
 
-To configure production user accounts, API keys, or custom cookie secrets:
+To configure production user accounts, database credentials, or external API keys:
 
 ### 1. Local Development (`.streamlit/secrets.toml`)
 Copy the provided template:
-```bash
-cp .streamlit/secrets.toml.example .streamlit/secrets.toml
+```powershell
+Copy-Item .streamlit/secrets.toml.example .streamlit/secrets.toml
 ```
 
-Generate a secure password hash for your analyst account:
-```bash
+Generate a secure password hash for an administrator account:
+```powershell
 python -c "import auth; print(auth.hash_password('YOUR_PASSWORD_HERE'))"
 ```
 
-Paste the hash into `.streamlit/secrets.toml`:
+Configure `.streamlit/secrets.toml`:
 ```toml
 [auth]
 cookie_secret = "your-custom-random-32-byte-hex-string"
 
-[credentials.users."analyst@yourfirm.com"]
-name = "Lead Analyst"
-role = "senior_researcher"
+[credentials.users."admin@yourfirm.com"]
+name = "System Administrator"
+role = "admin"
 password_hash = "pbkdf2_sha256$600000$..."
+
+# Optional: Persistent Cloud Database for registrations (Supabase)
+[supabase]
+url = "https://your-project-ref.supabase.co"
+key = "your-supabase-anon-or-service-role-key"
 
 OPENSEA_API_KEY = "your-opensea-api-key"
 COINGECKO_API_KEY = "your-coingecko-demo-key"
@@ -150,16 +192,13 @@ COINGECKO_API_KEY = "your-coingecko-demo-key"
 
 ## Installation & Local Development
 
-> [!NOTE]
-> **Localhost vs. Public Deployment**: `http://localhost:8501` is a local development address accessible only on your machine. To access the dashboard over the public internet, deploy the repository to Streamlit Community Cloud.
-
 ### 1. Clone the Repository
-```bash
+```powershell
 git clone https://github.com/likithaliki951-spec/nft-trend-analyzer.git
 cd nft-trend-analyzer
 ```
 
-### 2. Create a Virtual Environment
+### 2. Create and Activate Virtual Environment
 **On Windows (PowerShell):**
 ```powershell
 python -m venv .venv
@@ -173,13 +212,13 @@ source .venv/bin/activate
 ```
 
 ### 3. Install Dependencies
-```bash
+```powershell
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
 ### 4. Run the Dashboard
-```bash
+```powershell
 python -m streamlit run app.py
 ```
 Open `http://localhost:8501` in your browser.
@@ -192,14 +231,15 @@ Deploy your application publicly to Streamlit Community Cloud:
 
 1. **Verify Git Status**:
    Ensure confidential datasets in `private_data/` and local `secrets.toml` are not tracked:
-   ```bash
+   ```powershell
    git status
    ```
 
 2. **Commit and Push**:
+   ```powershell
    ```bash
-   git add .gitignore app.py auth.py nft_analysis.py ml_models.py valuation_categories.py api_clients.py requirements.txt pyproject.toml tests/ .streamlit/config.toml .streamlit/secrets.toml.example README.md
-   git commit -m "Deploy public login-protected NFT Trend Analyzer"
+   git add .gitignore app.py auth.py user_store.py data_loader.py nft_analysis.py ml_models.py valuation_categories.py api_clients.py requirements.txt pyproject.toml supabase_migration.sql tests/ .streamlit/config.toml .streamlit/secrets.toml.example README.md
+   git commit -m "Hardened cloud authentication: Supabase error handling, rotated secrets, multi-backend persistence"
    git push origin main
    ```
 
@@ -212,26 +252,23 @@ Deploy your application publicly to Streamlit Community Cloud:
      ```
    - Click **Advanced settings** (or **App settings** -> **Secrets** after creation).
    - Paste your production secrets configuration from `.streamlit/secrets.toml.example`.
+   - Ensure you configure a newly rotated 32-byte (64-character hex) cookie secret generated via:
+     ```bash
+     python -c "import secrets; print(secrets.token_hex(32))"
+     ```
    - Click **Deploy!**
-
-4. **Public Access URL**:
-   Streamlit Community Cloud generates a public URL:
-   ```text
-   https://<your-app-name>.streamlit.app
-   ```
-   Users visiting this URL will see the branded login portal. After entering their credentials, the full 7-page dashboard is unlocked.
 
 ---
 
 ## Automated Test Suite
 
-The test suite validates password hashing, HMAC session tokens, unauthenticated access blocking, login flow, session expiration, OIDC SSO, data cleaning, numeric parsing, chronological ML pipelines, SVR, GRU sequences, and full headless AppTest page rendering:
+The test suite validates password hashing, registration validation, duplicate prevention, SQLite and Supabase persistence, cloud error handling (timeouts, network drops, HTTP 401/403 permission errors, HTTP 500 errors, malformed responses), multi-format file ingestion (CSV, Excel, JSON, JSONL, Parquet, TXT), chronological ML pipelines, SVR, GRU sequences, and full headless AppTest page rendering across all 7 pages:
 
-```bash
+```powershell
 python -m pytest -v
 ```
 
-**Results: 40 passed tests** across unit functions and Streamlit `AppTest` harnesses.
+**Results: 78 passed tests** across unit functions and Streamlit `AppTest` harnesses with zero failures.
 
 ---
 
@@ -239,23 +276,28 @@ python -m pytest -v
 
 ```
 NFT-Trend-Analyzer/
-├── app.py                            # Streamlit entry point, authentication gate, and 7 interactive pages
-├── auth.py                           # NIST SP 800-63B PBKDF2 hashing, HMAC session tokens, access control
+├── app.py                            # Streamlit entry point, authentication gate, wide layouts, and 7 interactive pages
+├── auth.py                           # NIST SP 800-63B PBKDF2 hashing, HMAC session tokens, access control, login/register UI
+├── user_store.py                     # Persistent user storage (Supabase REST API + SQLite local fallback), registration validation
+├── supabase_migration.sql            # Idempotent PostgreSQL schema, unique index, and RLS policies for Supabase
+├── data_loader.py                    # Multi-format ingestion (CSV, Excel, JSON, JSONL, Parquet, TXT), diagnostics, templates
 ├── nft_analysis.py                   # Data cleaning, KPI calculation, feature engineering, and base ML
 ├── ml_models.py                      # SVR, pure-NumPy GRU Hybrid sequence model, multi-model evaluation
 ├── valuation_categories.py           # NFT valuation tiers, Random Forest & Calibrated SVC classifiers
 ├── api_clients.py                    # CoinGecko ETH/USD rates and OpenSea API v2 integration with TTL cache
-├── requirements.txt                  # Python dependencies (Streamlit, Pandas, NumPy, Scikit-learn, Plotly, Requests)
+├── requirements.txt                  # Python dependencies (Streamlit, Pandas, NumPy, Scikit-learn, Plotly, Requests, OpenPyXL, PyArrow)
 ├── pyproject.toml                    # Pytest configuration and project metadata
 ├── .streamlit/
 │   ├── config.toml                   # Dark theme configuration (charcoal background, violet accent)
-│   └── secrets.toml.example          # Template for production credentials and API keys
+│   └── secrets.toml.example          # Template for production credentials, database keys, and API keys
 ├── tests/
-│   ├── test_auth.py                  # Unit tests for password hashing, session tokens, AppTest auth gates (11 tests)
+│   ├── test_auth.py                  # Unit tests for password hashing, session tokens, rotation, AppTest auth gates (24 tests)
+│   ├── test_user_store.py            # Unit tests for registration, Supabase cloud error mock tests, SQLite persistence (17 tests)
+│   ├── test_data_loader.py           # Unit tests for CSV, Excel, JSON, JSONL, Parquet, TXT, and diagnostics (10 tests)
 │   ├── test_extended_capabilities.py # Unit tests for GRU, SVR, classifiers, and API clients (13 tests)
 │   ├── test_nft_analysis.py          # Unit tests for data cleaning, parsing, metrics, and models (13 tests)
 │   └── test_dashboard_pages.py       # Streamlit AppTest headless render verification for all 7 pages (1 test)
-├── .gitignore                        # Git ignore rules protecting private_data/, CSVs, and secrets.toml
+├── .gitignore                        # Git ignore rules protecting private_data/, CSVs, *.db, and secrets.toml
 └── README.md                         # Comprehensive documentation and deployment guide
 ```
 

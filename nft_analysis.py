@@ -177,6 +177,7 @@ def parse_dates(values: pd.Series) -> pd.Series:
                 return pd.to_datetime(values, unit="s", errors="coerce", utc=True).dt.tz_convert(None)
             elif 1e12 <= median_val <= 2.5e12:  # Epoch milliseconds
                 return pd.to_datetime(values, unit="ms", errors="coerce", utc=True).dt.tz_convert(None)
+        return pd.Series(pd.NaT, index=values.index, dtype="datetime64[ns]")
     parsed = pd.to_datetime(values, errors="coerce", utc=True)
     return parsed.dt.tz_convert(None)
 

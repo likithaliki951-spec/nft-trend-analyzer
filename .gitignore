@@ -58,3 +58,9 @@ __pycache__/
 *.pyc
 .streamlit/secrets.toml
 secrets.toml
+*.db
+*.sqlite
+*.sqlite3
+.streamlit/*.db
+*.backup
+*.bak
