@@ -340,16 +340,19 @@ def authenticate_user(
 
     users = get_configured_users()
     db_user = None
-    try:
-        db_user = user_store.get_registered_user(norm_email, db_path=db_path)
-    except user_store.DatabasePermissionError as exc:
-        return False, f"Authentication service unavailable: Cloud database permission error ({exc})."
-    except user_store.DatabaseConnectionError as exc:
-        return False, f"Authentication service unavailable: Cloud database connection error ({exc})."
-    except user_store.StorageError as exc:
-        return False, f"Authentication service unavailable: Database storage error ({exc})."
 
-    user = users.get(norm_email) or db_user
+    if norm_email in users:
+        user = users[norm_email]
+    else:
+        try:
+            db_user = user_store.get_registered_user(norm_email, db_path=db_path)
+        except user_store.DatabasePermissionError as exc:
+            return False, f"Authentication service unavailable: Cloud database permission error ({exc})."
+        except user_store.DatabaseConnectionError as exc:
+            return False, f"Authentication service unavailable: Cloud database connection error ({exc})."
+        except user_store.StorageError as exc:
+            return False, f"Authentication service unavailable: Database storage error ({exc})."
+        user = db_user
 
     if not users and not db_user:
         return (
@@ -667,8 +670,10 @@ def render_login_page() -> None:
     )
 
 
-def render_user_badge_and_logout(user: dict[str, Any]) -> None:
+def render_user_badge_and_logout(user: dict[str, Any] | None) -> None:
     """Render logged-in user indicator and sign-out button in the sidebar."""
+    if not user or not isinstance(user, dict):
+        return
     email = user.get("email", "Analyst")
     role = user.get("role", "researcher").replace("_", " ").title()
 

@@ -129,25 +129,26 @@ def test_authenticate_user_with_custom_secrets_credentials():
     }
 
     with patch("auth.get_configured_users", return_value=mock_users):
-        success, res = authenticate_user(test_email, test_password)
-        assert success is True
-        assert isinstance(res, dict)
-        assert res["email"] == test_email
-        assert res["role"] == "admin"
+        with patch("user_store.get_registered_user", return_value=None):
+            success, res = authenticate_user(test_email, test_password)
+            assert success is True
+            assert isinstance(res, dict)
+            assert res["email"] == test_email
+            assert res["role"] == "admin"
 
-        # Wrong password
-        failed, msg = authenticate_user(test_email, "wrong-admin-pass")
-        assert failed is False
-        assert "Invalid email" in str(msg)
+            # Wrong password
+            failed, msg = authenticate_user(test_email, "wrong-admin-pass")
+            assert failed is False
+            assert "Invalid email" in str(msg)
 
-        # Unknown user
-        unknown, msg = authenticate_user("stranger@nowhere.com", "any-pass")
-        assert unknown is False
-        assert "Invalid email" in str(msg)
+            # Unknown user
+            unknown, msg = authenticate_user("stranger@nowhere.com", "any-pass")
+            assert unknown is False
+            assert "Invalid email" in str(msg)
 
-        # Empty inputs
-        empty, msg = authenticate_user("", "")
-        assert empty is False
+            # Empty inputs
+            empty, msg = authenticate_user("", "")
+            assert empty is False
 
 
 def test_unauthenticated_app_access_blocks_dashboard():
