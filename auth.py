@@ -510,7 +510,7 @@ def render_login_page() -> None:
                 show_pwd = st.checkbox("Show password", key="login_show_pwd_chk")
                 login_password = st.text_input(
                     "Password",
-                    type="text" if show_pwd else "password",
+                    type="default" if show_pwd else "password",
                     placeholder="Enter password",
                     help="Your secure authentication key.",
                     key="login_pwd_input",
@@ -549,14 +549,14 @@ def render_login_page() -> None:
                 show_reg_pwd = st.checkbox("Show password", key="reg_show_pwd_chk")
                 reg_password = st.text_input(
                     "Create Password",
-                    type="text" if show_reg_pwd else "password",
+                    type="default" if show_reg_pwd else "password",
                     placeholder="At least 8 characters",
                     help="Minimum 8 characters with at least one letter and one number or special character.",
                     key="reg_pwd_input",
                 )
                 reg_password_confirm = st.text_input(
                     "Confirm Password",
-                    type="text" if show_reg_pwd else "password",
+                    type="default" if show_reg_pwd else "password",
                     placeholder="Re-enter password",
                     help="Must match your password exactly.",
                     key="reg_pwd_confirm_input",

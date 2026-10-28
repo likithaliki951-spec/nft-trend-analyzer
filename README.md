@@ -268,7 +268,7 @@ The test suite validates password hashing, registration validation, duplicate pr
 python -m pytest -v
 ```
 
-**Results: 81 passed tests** across unit functions and Streamlit `AppTest` harnesses with zero failures.
+**Results: 82 passed tests** across unit functions and Streamlit `AppTest` harnesses with zero failures.
 
 ---
 
@@ -291,7 +291,7 @@ NFT-Trend-Analyzer/
 │   ├── config.toml                   # Dark theme configuration (charcoal background, violet accent)
 │   └── secrets.toml.example          # Template for production credentials, database keys, and API keys
 ├── tests/
-│   ├── test_auth.py                  # Unit tests for password hashing, session tokens, rotation, AppTest auth gates (24 tests)
+│   ├── test_auth.py                  # Unit tests for password hashing, session tokens, rotation, AppTest auth gates (25 tests)
 │   ├── test_user_store.py            # Unit tests for registration, Supabase cloud error mock tests, SQLite persistence (17 tests)
 │   ├── test_data_loader.py           # Unit tests for CSV, Excel, JSON, JSONL, Parquet, TXT, optional fallbacks (13 tests)
 │   ├── test_extended_capabilities.py # Unit tests for GRU, SVR, classifiers, and API clients (13 tests)

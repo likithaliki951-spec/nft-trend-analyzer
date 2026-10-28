@@ -250,6 +250,24 @@ def test_interactive_login_form_submission_on_localhost():
     assert AUTH_SESSION_KEY in app.session_state
 
 
+def test_login_page_show_password_toggle_does_not_raise_streamlit_value_error():
+    """Toggling 'Show password' renders valid widget types ('default') and does not raise StreamlitValueError."""
+    app = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=45)
+    app.run()
+    assert not app.exception
+
+    # Verify initial password widget exists
+    assert any(w.key == "login_pwd_input" for w in app.text_input)
+
+    # Toggle the show password checkbox on the login form
+    show_pwd_chk = next(c for c in app.checkbox if c.key == "login_show_pwd_chk")
+    show_pwd_chk.check()
+
+    # Submit the form with show_pwd checked
+    app.button[0].click().run()
+    assert not app.exception
+
+
 def test_authenticate_registered_user_from_db(tmp_path):
     """Verify that a newly registered user in an isolated persistent store can log in successfully."""
     import uuid
