@@ -9,7 +9,13 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+import sys
 from typing import Any
+
+# Ensure project root is prioritized in sys.path for robust Streamlit Community Cloud module resolution
+_MODULE_ROOT = Path(__file__).resolve().parent
+if str(_MODULE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MODULE_ROOT))
 
 import numpy as np
 import pandas as pd
@@ -22,16 +28,32 @@ except ImportError:
     HAS_OPENPYXL = False
 
 from nft_analysis import (
-    DATE_TERMS,
-    PRICE_TERMS,
-    SALES_TERMS,
-    SOCIAL_TERMS,
     clean_dataframe,
     discover_social_columns,
     infer_column,
     parse_dates,
     parse_numeric,
 )
+
+__all__ = [
+    "HAS_OPENPYXL",
+    "MAX_UPLOAD_BYTES",
+    "POTENTIAL_JOIN_KEYS",
+    "SUPPORTED_EXTENSIONS",
+    "discover_join_keys",
+    "export_dataframe_as_csv",
+    "generate_sample_nft_csv",
+    "get_excel_sheet_names",
+    "get_file_extension",
+    "join_market_and_social_datasets",
+    "load_uploaded_dataset",
+    "read_csv_with_fallback",
+    "read_delimited_text",
+    "read_json_data",
+    "read_jsonl_data",
+    "validate_and_diagnose_dataset",
+    "validate_join_keys",
+]
 
 SUPPORTED_EXTENSIONS = (".csv", ".xlsx", ".xls", ".json", ".jsonl", ".parquet", ".txt")
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB max file upload limit

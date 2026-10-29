@@ -10,9 +10,15 @@ import json
 import os
 from pathlib import Path
 import secrets
+import sys
 import time
 import tomllib
 from typing import Any
+
+# Ensure project root is prioritized in sys.path for robust Streamlit Community Cloud module resolution
+_AUTH_ROOT = Path(__file__).resolve().parent
+if str(_AUTH_ROOT) not in sys.path:
+    sys.path.insert(0, str(_AUTH_ROOT))
 
 import streamlit as st
 

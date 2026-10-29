@@ -6,7 +6,14 @@ import datetime
 import hashlib
 import html
 import io
+from pathlib import Path
+import sys
 from typing import Any
+
+# Ensure project root is prioritized in sys.path for robust Streamlit Community Cloud module resolution
+_APP_ROOT = Path(__file__).resolve().parent
+if str(_APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(_APP_ROOT))
 
 import numpy as np
 import pandas as pd
@@ -34,6 +41,7 @@ from data_loader import (
     get_file_extension,
     join_market_and_social_datasets,
     load_uploaded_dataset,
+    read_csv_with_fallback,
     validate_and_diagnose_dataset,
     validate_join_keys,
 )
@@ -664,7 +672,6 @@ def train_for_selection(
 
 def read_uploaded_csv(file_bytes: bytes) -> pd.DataFrame:
     """Read CSV bytes with robust multi-encoding and delimiter fallback (backwards compatibility)."""
-    from data_loader import read_csv_with_fallback
     return read_csv_with_fallback(file_bytes)
 
 

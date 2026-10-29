@@ -11,9 +11,15 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import sys
 import threading
 from typing import Any
 import uuid
+
+# Ensure project root is prioritized in sys.path for robust Streamlit Community Cloud module resolution
+_STORE_ROOT = Path(__file__).resolve().parent
+if str(_STORE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_STORE_ROOT))
 
 import requests
 import streamlit as st
