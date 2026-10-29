@@ -18,6 +18,7 @@ from sklearn.metrics import (
     recall_score,
 )
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
@@ -165,6 +166,13 @@ def evaluate_valuation_classifiers(
                 ("imputer", SimpleImputer(strategy="median")),
                 ("scale", StandardScaler()),
                 ("model", CalibratedClassifierCV(SVC(kernel="rbf", class_weight="balanced", random_state=42), ensemble=False)),
+            ]
+        ),
+        "Logistic Regression": lambda: Pipeline(
+            [
+                ("imputer", SimpleImputer(strategy="median")),
+                ("scale", StandardScaler()),
+                ("model", LogisticRegression(max_iter=1000, random_state=42, class_weight="balanced")),
             ]
         ),
     }

@@ -9,17 +9,21 @@ import pandas as pd
 import pytest
 
 from data_loader import (
+    POTENTIAL_JOIN_KEYS,
     SUPPORTED_EXTENSIONS,
+    discover_join_keys,
     export_dataframe_as_csv,
     generate_sample_nft_csv,
     get_excel_sheet_names,
     get_file_extension,
+    join_market_and_social_datasets,
     load_uploaded_dataset,
     read_csv_with_fallback,
     read_delimited_text,
     read_json_data,
     read_jsonl_data,
     validate_and_diagnose_dataset,
+    validate_join_keys,
 )
 
 
@@ -195,3 +199,102 @@ def test_load_parquet_without_pyarrow_raises_graceful_import_error():
     with patch("pandas.read_parquet", side_effect=ImportError("No module named 'pyarrow'")):
         with pytest.raises(ImportError, match="requires the 'pyarrow' package"):
             load_uploaded_dataset(b"dummy parquet bytes", "test.parquet")
+
+
+# ==============================================================================
+# Dual Dataset Ingestion & Join Tests
+# ==============================================================================
+
+
+def test_discover_join_keys():
+    df_market = pd.DataFrame(
+        {
+            "Collection": ["Azuki", "BAYC"],
+            "sale_date": ["2024-01-01", "2024-01-02"],
+            "price_eth": [12.5, 24.0],
+        }
+    )
+    df_social = pd.DataFrame(
+        {
+            "collection": ["Azuki", "BAYC"],
+            "sale_date": ["2024-01-01", "2024-01-02"],
+            "social_likes": [450, 1200],
+        }
+    )
+
+    discovered = discover_join_keys(df_market, df_social)
+    # Canonical NFT keys prioritized
+    assert "Collection" in discovered
+    assert "sale_date" in discovered
+
+    # Empty inputs return empty list
+    assert discover_join_keys(pd.DataFrame(), df_social) == []
+
+
+def test_validate_join_keys_metrics_and_warnings():
+    df_market = pd.DataFrame(
+        {
+            "collection": ["Azuki ", "BAYC", "Doodles", "Punks"],
+            "price_eth": [12.5, 24.0, 3.2, 55.0],
+        }
+    )
+    df_social = pd.DataFrame(
+        {
+            "collection": ["Azuki", "BAYC", "Moonbirds"],
+            "social_likes": [450, 1200, 310],
+        }
+    )
+
+    validation = validate_join_keys(df_market, df_social, "collection")
+    assert validation["join_key"] == "collection"
+    assert validation["overlap_unique_count"] == 2  # Azuki and BAYC
+    assert validation["is_many_to_many"] is False
+
+    # Test Many-to-Many warning when duplicates exist on both sides
+    df_m_dup = pd.DataFrame({"collection": ["Azuki", "Azuki", "BAYC"], "price": [1, 2, 3]})
+    df_s_dup = pd.DataFrame({"collection": ["Azuki", "Azuki", "Other"], "likes": [10, 20, 30]})
+    val_m2m = validate_join_keys(df_m_dup, df_s_dup, "collection")
+    assert val_m2m["is_many_to_many"] is True
+    assert any("Many-to-many" in w for w in val_m2m["warnings"])
+
+    # Invalid column raises ValueError
+    with pytest.raises(ValueError, match="not found"):
+        validate_join_keys(df_market, df_social, "non_existent_key")
+
+
+def test_join_market_and_social_datasets():
+    df_market = pd.DataFrame(
+        {
+            "collection": ["Azuki ", "BAYC", "Doodles", "Punks"],
+            "sale_date": ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04"],
+            "price_eth": [12.5, 24.0, 3.2, 55.0],
+        }
+    )
+    df_social = pd.DataFrame(
+        {
+            "collection": ["Azuki", "BAYC", "Moonbirds"],
+            "social_likes": [450, 1200, 310],
+            "social_comments": [35, 120, 40],
+        }
+    )
+
+    # 1. Inner join (default)
+    joined_inner, diag_inner = join_market_and_social_datasets(df_market, df_social, "collection", join_type="inner")
+    assert diag_inner["join_type"] == "inner"
+    assert len(joined_inner) == 2  # Only Azuki and BAYC match
+    assert "price_eth" in joined_inner.columns
+    assert "social_likes" in joined_inner.columns
+    assert diag_inner["matched_records"] == 2
+
+    # 2. Left join
+    joined_left, diag_left = join_market_and_social_datasets(df_market, df_social, "collection", join_type="left")
+    assert len(joined_left) == 4  # All 4 market rows preserved
+    assert diag_left["unmatched_market_records"] == 2  # Doodles & Punks lack social matches
+
+    # 3. Outer join
+    joined_outer, diag_outer = join_market_and_social_datasets(df_market, df_social, "collection", join_type="outer")
+    assert len(joined_outer) == 5  # 4 market + 1 unique social (Moonbirds)
+
+    # 4. Invalid join type raises ValueError
+    with pytest.raises(ValueError, match="Invalid join_type"):
+        join_market_and_social_datasets(df_market, df_social, "collection", join_type="cross")

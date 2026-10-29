@@ -575,8 +575,10 @@ def render_login_page() -> None:
                                 reg_email, reg_name, reg_password, reg_password_confirm
                             )
                             if reg_success:
+                                storage_info = user_store.get_storage_info()
+                                backend_name = storage_info.get("backend", "database")
                                 st.success(
-                                    "🎉 Account registered successfully!\n\n"
+                                    f"🎉 Account registered successfully in **{backend_name}**!\n\n"
                                     "Please switch to the **Sign In** tab above to access your research terminal."
                                 )
                             else:
@@ -584,7 +586,11 @@ def render_login_page() -> None:
                         except user_store.DatabasePermissionError as exc:
                             st.error(f"Registration failed: Cloud database permission error ({exc}).")
                         except user_store.DatabaseConnectionError as exc:
-                            st.error(f"Registration failed: Cloud database connection error ({exc}).")
+                            st.error(
+                                f"Registration failed: Cloud database connection error ({exc}).\n\n"
+                                "💡 If demonstrating locally, comment out the `[supabase]` section in `.streamlit/secrets.toml` "
+                                "to activate the built-in Local SQLite database (`.streamlit/users.db`)."
+                            )
                         except user_store.StorageError as exc:
                             st.error(f"Registration failed: Database storage error ({exc}).")
 

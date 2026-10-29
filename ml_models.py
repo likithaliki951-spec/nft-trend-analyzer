@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from sklearn.decomposition import PCA
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
@@ -173,8 +174,86 @@ class GRUHybridTimeSeriesRegressor:
         return np.array(predictions)
 
 
+def fit_leakage_safe_pca(
+    x_train: pd.DataFrame | np.ndarray,
+    x_test: pd.DataFrame | np.ndarray | None = None,
+    target_components: int = 60,
+) -> dict[str, Any]:
+    """Fit PCA dimensionality reduction strictly on training data and transform features without data leakage.
+
+    Enforces the academic report specification (reducing 127 input features to 60 principal components),
+    while mathematically bounding n_components <= min(N_train, D_features) when fewer features or rows exist.
+    """
+    x_train_df = pd.DataFrame(x_train) if not isinstance(x_train, pd.DataFrame) else x_train
+    n_train, n_features = x_train_df.shape
+
+    if n_train == 0 or n_features == 0:
+        raise ValueError("Cannot perform PCA on an empty feature matrix.")
+
+    # Mathematically, rank of X <= min(n_samples, n_features)
+    max_possible = min(n_train, n_features)
+    n_components = max(1, min(int(target_components), max_possible))
+
+    imputer = SimpleImputer(strategy="median")
+    scaler = StandardScaler()
+    pca = PCA(n_components=n_components, random_state=42)
+
+    # 1. Fit strictly on training records
+    x_train_imp = imputer.fit_transform(x_train_df)
+    x_train_scaled = scaler.fit_transform(x_train_imp)
+    x_train_pca = pca.fit_transform(x_train_scaled)
+
+    # 2. Transform out-of-sample test records using fitted parameters only
+    x_test_pca = None
+    if x_test is not None:
+        x_test_df = pd.DataFrame(x_test) if not isinstance(x_test, pd.DataFrame) else x_test
+        x_test_imp = imputer.transform(x_test_df)
+        x_test_scaled = scaler.transform(x_test_imp)
+        x_test_pca = pca.transform(x_test_scaled)
+
+    var_ratio = [float(v) for v in pca.explained_variance_ratio_]
+    cum_var_ratio = [float(v) for v in np.cumsum(pca.explained_variance_ratio_)]
+    total_var = float(np.sum(pca.explained_variance_ratio_))
+    comp_names = [f"PC{i+1}" for i in range(n_components)]
+
+    if n_features >= target_components and n_train >= target_components:
+        msg = (
+            f"PCA dimensionality reduction: reduced from {n_features} input features to "
+            f"{n_components} principal components following the academic report specification (127 -> 60 components). "
+            f"Total explained variance: {total_var * 100:.2f}%."
+        )
+    else:
+        msg = (
+            f"PCA dimensionality reduction: reduced {n_features} features to {n_components} components "
+            f"(bounded by min(N_train={n_train}, D_features={n_features}) to preserve linear independence without leakage). "
+            f"Total explained variance: {total_var * 100:.2f}%."
+        )
+
+    return {
+        "x_train_pca": x_train_pca,
+        "x_test_pca": x_test_pca,
+        "input_features_count": n_features,
+        "target_components": int(target_components),
+        "retained_components": n_components,
+        "explained_variance_ratio": var_ratio,
+        "cumulative_variance_ratio": cum_var_ratio,
+        "total_explained_variance": total_var,
+        "component_names": comp_names,
+        "status_message": msg,
+        "pipeline": {
+            "imputer": imputer,
+            "scaler": scaler,
+            "pca": pca,
+        },
+    }
+
+
 def evaluate_extended_models(
-    dataframe: pd.DataFrame, date_column: str, target_column: str
+    dataframe: pd.DataFrame,
+    date_column: str,
+    target_column: str,
+    use_pca: bool = False,
+    target_pca_components: int = 60,
 ) -> dict[str, Any]:
     """Fit and benchmark Linear Regression, Random Forest, Support Vector Regression (SVR), and GRU Hybrid Model."""
     features, target, dates = build_time_features(dataframe, date_column, target_column)
@@ -185,6 +264,27 @@ def evaluate_extended_models(
     x_train, x_test = features.iloc[:split_index], features.iloc[split_index:]
     y_train, y_test = target.iloc[:split_index], target.iloc[split_index:]
     test_dates = dates.iloc[split_index:]
+
+    pca_diagnostics: dict[str, Any] = {"enabled": False}
+    fitted_pca_pipe = None
+
+    if use_pca:
+        pca_res = fit_leakage_safe_pca(x_train, x_test, target_components=target_pca_components)
+        fitted_pca_pipe = pca_res["pipeline"]
+        comp_names = pca_res["component_names"]
+        x_train = pd.DataFrame(pca_res["x_train_pca"], columns=comp_names, index=x_train.index)
+        x_test = pd.DataFrame(pca_res["x_test_pca"], columns=comp_names, index=x_test.index)
+        pca_diagnostics = {
+            "enabled": True,
+            "input_features_count": pca_res["input_features_count"],
+            "target_components": pca_res["target_components"],
+            "retained_components": pca_res["retained_components"],
+            "total_explained_variance": pca_res["total_explained_variance"],
+            "explained_variance_ratio": pca_res["explained_variance_ratio"],
+            "cumulative_variance_ratio": pca_res["cumulative_variance_ratio"],
+            "component_names": pca_res["component_names"],
+            "status_message": pca_res["status_message"],
+        }
 
     # Model Pipelines for Standard Algorithms
     model_factories = {
@@ -212,12 +312,13 @@ def evaluate_extended_models(
         "residuals": {},
         "actual": y_test.reset_index(drop=True),
         "dates": test_dates.reset_index(drop=True),
-        "features": list(features.columns),
+        "features": list(x_train.columns),
         "training_rows": len(x_train),
         "test_rows": len(x_test),
         "split_date": test_dates.iloc[0],
         "training_times": {},
         "gru_status": {"available": False, "reason": ""},
+        "pca_diagnostics": pca_diagnostics,
     }
 
     for model_name, factory in model_factories.items():
@@ -244,13 +345,19 @@ def evaluate_extended_models(
         try:
             t0 = time.perf_counter()
             gru_hybrid = GRUHybridTimeSeriesRegressor(window_size=3, hidden_dim=8, seed=42)
-            imputer = SimpleImputer(strategy="median")
-            imputed_features = imputer.fit_transform(features)
+            if use_pca and fitted_pca_pipe is not None:
+                imp = fitted_pca_pipe["imputer"].transform(features)
+                scl = fitted_pca_pipe["scaler"].transform(imp)
+                tab_features_transformed = fitted_pca_pipe["pca"].transform(scl)
+            else:
+                imputer = SimpleImputer(strategy="median")
+                imputer.fit(features.iloc[:split_index])
+                tab_features_transformed = imputer.transform(features)
 
-            gru_hybrid.fit(y_train.to_numpy(), imputed_features[:split_index])
+            gru_hybrid.fit(y_train.to_numpy(), tab_features_transformed[:split_index])
             all_target = target.to_numpy()
             test_indices = np.arange(split_index, len(features))
-            gru_preds = gru_hybrid.predict(all_target, imputed_features, test_indices)
+            gru_preds = gru_hybrid.predict(all_target, tab_features_transformed, test_indices)
             train_time = time.perf_counter() - t0
 
             # Guard against any NaNs in initial window

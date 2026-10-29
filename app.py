@@ -27,12 +27,15 @@ from auth import (
 )
 from data_loader import (
     SUPPORTED_EXTENSIONS,
+    discover_join_keys,
     export_dataframe_as_csv,
     generate_sample_nft_csv,
     get_excel_sheet_names,
     get_file_extension,
+    join_market_and_social_datasets,
     load_uploaded_dataset,
     validate_and_diagnose_dataset,
+    validate_join_keys,
 )
 from ml_models import evaluate_extended_models
 from nft_analysis import (
@@ -602,8 +605,45 @@ def actual_predicted_chart(results: dict[str, Any]) -> None:
     st.plotly_chart(scatter, width="stretch")
 
 
+def show_pca_diagnostics(pca_info: dict[str, Any]) -> None:
+    """Render diagnostic metrics and scree plot for PCA dimensionality reduction."""
+    if not pca_info or not pca_info.get("enabled"):
+        return
+    st.subheader("Principal Component Analysis (PCA) Decomposition")
+    st.info(f"ℹ️ {pca_info.get('status_message', 'PCA feature reduction applied.')}")
+    p_col1, p_col2, p_col3 = st.columns(3)
+    p_col1.metric("Original Features", f"{pca_info.get('input_features_count', 0)}")
+    p_col2.metric("Retained Components", f"{pca_info.get('retained_components', 0)}")
+    p_col3.metric("Cumulative Explained Variance", f"{pca_info.get('total_explained_variance', 0.0) * 100:.2f}%")
+
+    ratios = pca_info.get("explained_variance_ratio", [])
+    if ratios:
+        names = pca_info.get("component_names", [f"PC{i+1}" for i in range(len(ratios))])
+        scree_df = pd.DataFrame(
+            {
+                "Component": names,
+                "Explained Variance Ratio": ratios,
+                "Cumulative Variance Ratio": pca_info.get("cumulative_variance_ratio", []),
+            }
+        )
+        scree_fig = px.bar(
+            scree_df,
+            x="Component",
+            y="Explained Variance Ratio",
+            title="PCA Scree Plot (Explained Variance by Component)",
+            text=[f"{v * 100:.1f}%" for v in ratios],
+        )
+        scree_fig.update_traces(marker_color="#3b82f6", textposition="outside")
+        apply_chart_theme(scree_fig, height=280)
+        st.plotly_chart(scree_fig, width="stretch")
+
+
 def train_for_selection(
-    dataframe: pd.DataFrame, date_column: str | None, target_column: str | None
+    dataframe: pd.DataFrame,
+    date_column: str | None,
+    target_column: str | None,
+    use_pca: bool = False,
+    target_pca_components: int = 60,
 ) -> dict[str, Any] | None:
     if not date_column:
         st.warning("A valid date/time column is required for chronological model evaluation.")
@@ -612,7 +652,9 @@ def train_for_selection(
         st.warning("Select a numeric price/target field to train models.")
         return None
     try:
-        return evaluate_extended_models(dataframe, date_column, target_column)
+        return evaluate_extended_models(
+            dataframe, date_column, target_column, use_pca=use_pca, target_pca_components=target_pca_components
+        )
     except ValueError as error:
         st.info(str(error))
     except Exception as error:  # Keep malformed user uploads from crashing the dashboard.
@@ -642,31 +684,108 @@ with st.sidebar:
     render_user_badge_and_logout(authenticated_user)
     st.divider()
     st.markdown("### 🧭 Navigation & Data")
-    uploaded_file = st.file_uploader(
-        "Upload dataset (CSV, Excel, JSON, JSONL, Parquet, TXT)",
-        type=["csv", "xlsx", "xls", "json", "jsonl", "parquet", "txt"],
-        help="Upload NFT time-series or valuation data. Supported formats: .csv, .xlsx, .xls, .json, .jsonl, .parquet, and .txt. Files are held strictly in this authenticated session.",
+    data_mode = st.radio(
+        "Data Ingestion Mode",
+        ["Single Unified File", "Join Market + Social Datasets"],
+        index=0,
+        key="data_mode_choice",
+        help="Upload a single consolidated NFT dataset or separate market/transaction and social engagement tables to join.",
     )
-    sheet_choice = None
-    if uploaded_file is not None and get_file_extension(uploaded_file.name) in (".xlsx", ".xls"):
-        sheets = get_excel_sheet_names(uploaded_file.getvalue())
-        if len(sheets) > 1:
-            sheet_choice = st.selectbox("Select Excel worksheet", sheets, key="excel_sheet_selector")
 
-    if uploaded_file is not None:
-        file_bytes = uploaded_file.getvalue()
-        cache_key_data = file_bytes + (sheet_choice.encode("utf-8") if sheet_choice else b"")
-        signature = hashlib.sha256(cache_key_data).hexdigest()
-        if st.session_state.get("dataset_signature") != signature:
+    if data_mode == "Single Unified File":
+        uploaded_file = st.file_uploader(
+            "Upload dataset (CSV, Excel, JSON, JSONL, Parquet, TXT)",
+            type=["csv", "xlsx", "xls", "json", "jsonl", "parquet", "txt"],
+            help="Upload NFT time-series or valuation data. Supported formats: .csv, .xlsx, .xls, .json, .jsonl, .parquet, and .txt. Files are held strictly in this authenticated session.",
+        )
+        sheet_choice = None
+        if uploaded_file is not None and get_file_extension(uploaded_file.name) in (".xlsx", ".xls"):
+            sheets = get_excel_sheet_names(uploaded_file.getvalue())
+            if len(sheets) > 1:
+                sheet_choice = st.selectbox("Select Excel worksheet", sheets, key="excel_sheet_selector")
+
+        if uploaded_file is not None:
+            file_bytes = uploaded_file.getvalue()
+            cache_key_data = file_bytes + (sheet_choice.encode("utf-8") if sheet_choice else b"")
+            signature = hashlib.sha256(cache_key_data).hexdigest()
+            if st.session_state.get("dataset_signature") != signature:
+                try:
+                    raw_dataframe, meta = load_uploaded_dataset(file_bytes, uploaded_file.name, sheet_name=sheet_choice)
+                    set_dataset(raw_dataframe, signature, f"Uploaded: {uploaded_file.name}")
+                    st.session_state["upload_metadata"] = meta
+                    st.session_state.pop("join_diagnostics", None)
+                    st.success(f"Loaded {meta['clean_rows']:,} rows from {meta['extension'].upper()} ({meta['size_formatted']})")
+                except Exception as error:
+                    st.session_state["dataset"] = None
+                    st.session_state["dataset_signature"] = signature
+                    st.error(f"Could not load this file: {error}")
+    else:
+        st.markdown("#### 🔗 Join Dual Datasets")
+        m_file = st.file_uploader(
+            "1. Market / Transaction dataset",
+            type=["csv", "xlsx", "xls", "json", "jsonl", "parquet", "txt"],
+            key="market_file_input",
+            help="Upload the NFT sales, price, and volume dataset.",
+        )
+        s_file = st.file_uploader(
+            "2. Social Engagement dataset",
+            type=["csv", "xlsx", "xls", "json", "jsonl", "parquet", "txt"],
+            key="social_file_input",
+            help="Upload the social media mentions, likes, and engagement dataset.",
+        )
+
+        if m_file is not None and s_file is not None:
             try:
-                raw_dataframe, meta = load_uploaded_dataset(file_bytes, uploaded_file.name, sheet_name=sheet_choice)
-                set_dataset(raw_dataframe, signature, f"Uploaded: {uploaded_file.name}")
-                st.session_state["upload_metadata"] = meta
-                st.success(f"Loaded {meta['clean_rows']:,} rows from {meta['extension'].upper()} ({meta['size_formatted']})")
-            except Exception as error:
-                st.session_state["dataset"] = None
-                st.session_state["dataset_signature"] = signature
-                st.error(f"Could not load this file: {error}")
+                df_m, m_meta = load_uploaded_dataset(m_file.getvalue(), m_file.name)
+                df_s, s_meta = load_uploaded_dataset(s_file.getvalue(), s_file.name)
+
+                discovered_keys = discover_join_keys(df_m, df_s)
+                if not discovered_keys:
+                    all_cols = sorted(list(set(df_m.columns).union(set(df_s.columns))))
+                    selected_key = st.selectbox("Join Key Column", all_cols, key="join_key_select")
+                else:
+                    selected_key = st.selectbox("Join Key Column", discovered_keys, key="join_key_select")
+
+                join_type = st.selectbox(
+                    "Join Method",
+                    ["inner", "left", "outer"],
+                    index=0,
+                    key="join_type_select",
+                    help="Inner: Keep only matching rows. Left: Keep all market records. Outer: Keep all records from both.",
+                )
+
+                if selected_key:
+                    try:
+                        val_summary = validate_join_keys(df_m, df_s, selected_key)
+                        st.caption(
+                            f"Key Overlap: {val_summary['overlap_unique_count']} unique matches "
+                            f"({val_summary['market_overlap_pct']}% market, {val_summary['social_overlap_pct']}% social)"
+                        )
+                        for w in val_summary["warnings"]:
+                            st.caption(f"⚠️ {w}")
+
+                        if st.button("⚡ Merge & Load Datasets", width="stretch", key="execute_join_btn"):
+                            joined_df, join_diag = join_market_and_social_datasets(
+                                df_m, df_s, selected_key, join_type=join_type
+                            )
+                            join_sig = hashlib.sha256(
+                                (m_file.name + s_file.name + selected_key + join_type).encode("utf-8")
+                            ).hexdigest()
+                            set_dataset(
+                                joined_df,
+                                join_sig,
+                                f"Joined ({join_type}): {m_file.name} + {s_file.name}",
+                            )
+                            st.session_state["join_diagnostics"] = join_diag
+                            st.success(
+                                f"Successfully joined: {join_diag['joined_rows']:,} rows "
+                                f"({join_diag['matched_records']:,} full matches on '{selected_key}')."
+                            )
+                            st.rerun()
+                    except ValueError as v_err:
+                        st.warning(str(v_err))
+            except Exception as e:
+                st.error(f"Error parsing join datasets: {e}")
 
     col_demo, col_tpl = st.columns([1, 1])
     with col_demo:
@@ -795,6 +914,18 @@ if st.session_state.get("dataset_source") == "Synthetic educational demo":
 # ==============================================================================
 if nav_page == "NFT Market Overview":
     st.header("NFT Market Overview")
+    join_info = st.session_state.get("join_diagnostics")
+    if join_info:
+        with st.expander("🔗 Dual Dataset Ingestion & Join Diagnostics", expanded=True):
+            j1, j2, j3, j4 = st.columns(4)
+            j1.metric("Join Key", str(join_info["join_key"]))
+            j2.metric("Join Method", str(join_info["join_type"]).upper())
+            j3.metric("Input Records", f"Market: {join_info['market_rows']} | Social: {join_info['social_rows']}")
+            j4.metric("Matched Records", f"{join_info['matched_records']:,} / {join_info['joined_rows']:,}")
+            if join_info.get("warnings"):
+                for w in join_info["warnings"]:
+                    st.caption(f"⚠️ {w}")
+
     stats = st.session_state.get("cleaning_stats", {})
     market_kpis = compute_market_kpis(dataframe, price_column, sales_column)
     asset_count, asset_col = count_unique_assets(dataframe)
@@ -925,6 +1056,13 @@ elif nav_page == "Time-Series Analysis":
 # ==============================================================================
 elif nav_page == "Social-Media Engagement":
     st.header("Social-Media Engagement Analysis")
+    join_info = st.session_state.get("join_diagnostics")
+    if join_info:
+        st.info(
+            f"🔗 Operating on Joined Dataset ({join_info['join_type'].upper()} on '{join_info['join_key']}'): "
+            f"Combined {join_info['market_rows']} market records with {join_info['social_rows']} social engagement records "
+            f"({join_info['matched_records']} cross-matched pairs)."
+        )
     st.markdown(
         """
         <div class="research-callout">
@@ -1109,8 +1247,33 @@ elif nav_page == "Price Prediction":
         help="Select which column represents the price/target to forecast.",
     )
 
-    results = train_for_selection(dataframe, date_column, pred_target)
+    with st.expander("🔬 Dimensionality Reduction (PCA — Academic Report Spec)", expanded=False):
+        use_pca_pred = st.checkbox(
+            "Enable PCA Feature Reduction",
+            value=False,
+            key="pca_pred_enable",
+            help="Reduces tabular input features into orthogonal principal components (academic report specifies 127 features -> 60 components).",
+        )
+        pca_pred_components = int(
+            st.number_input(
+                "Target Principal Components",
+                min_value=1,
+                max_value=200,
+                value=60,
+                step=1,
+                key="pca_pred_components_input",
+                help="Target number of components. Bounded by min(N_train, D_features) without leakage.",
+            )
+        )
+
+    results = train_for_selection(
+        dataframe, date_column, pred_target, use_pca=use_pca_pred, target_pca_components=pca_pred_components
+    )
     if results:
+        # Display PCA diagnostics if active
+        if results.get("pca_diagnostics", {}).get("enabled"):
+            show_pca_diagnostics(results["pca_diagnostics"])
+
         # Display GRU Sequence Status Callout
         gru_info = results.get("gru_status", {})
         if gru_info.get("available"):
@@ -1166,8 +1329,33 @@ elif nav_page == "Model Evaluation":
         key="eval_target_select",
     )
 
-    results = train_for_selection(dataframe, date_column, eval_target)
+    with st.expander("🔬 Dimensionality Reduction (PCA — Academic Report Spec)", expanded=False):
+        use_pca_eval = st.checkbox(
+            "Enable PCA Feature Reduction",
+            value=False,
+            key="pca_eval_enable",
+            help="Benchmark all regressors using PCA-reduced feature space (academic report specifies 127 features -> 60 components).",
+        )
+        pca_eval_components = int(
+            st.number_input(
+                "Target Principal Components",
+                min_value=1,
+                max_value=200,
+                value=60,
+                step=1,
+                key="pca_eval_components_input",
+                help="Target number of components. Bounded by min(N_train, D_features) without leakage.",
+            )
+        )
+
+    results = train_for_selection(
+        dataframe, date_column, eval_target, use_pca=use_pca_eval, target_pca_components=pca_eval_components
+    )
     if results:
+        # Display PCA diagnostics if active
+        if results.get("pca_diagnostics", {}).get("enabled"):
+            show_pca_diagnostics(results["pca_diagnostics"])
+
         st.subheader("Multi-Model Regression Comparison")
         metrics_dict = results["metrics"]
         metric_rows = []
@@ -1343,7 +1531,7 @@ elif nav_page == "Valuation Categories":
 
         # Confusion Matrix Display
         st.subheader("Confusion Matrix Benchmark")
-        cm_col1, cm_col2 = st.columns(2)
+        cm_col1, cm_col2, cm_col3 = st.columns(3)
         classes_labels = clf_results["classes"]
         with cm_col1:
             cm_rf = clf_results["confusion_matrices"]["Random Forest Classifier"]
@@ -1371,12 +1559,31 @@ elif nav_page == "Valuation Categories":
             )
             apply_chart_theme(fig_svm, height=360)
             st.plotly_chart(fig_svm, width="stretch")
+        with cm_col3:
+            cm_lr = clf_results["confusion_matrices"]["Logistic Regression"]
+            fig_lr = px.imshow(
+                cm_lr,
+                labels=dict(x="Predicted Category", y="Actual Category", color="Records"),
+                x=classes_labels,
+                y=classes_labels,
+                text_auto=True,
+                color_continuous_scale="Greens",
+                title="Logistic Regression Confusion Matrix",
+            )
+            apply_chart_theme(fig_lr, height=360)
+            st.plotly_chart(fig_lr, width="stretch")
 
         # 3. Interactive Valuation Estimator
         st.subheader("Interactive Valuation Category Estimator")
         st.write("Simulate asset valuation tier prediction for specific historical lag and calendar inputs:")
         features_list = clf_results["features"]
-        rf_pipe = clf_results["trained_pipelines"]["Random Forest Classifier"]
+        selected_model_name = st.selectbox(
+            "Select Classification Model for Estimation",
+            list(clf_results["trained_pipelines"].keys()),
+            index=0,
+            key="valuation_est_model_select",
+        )
+        chosen_pipe = clf_results["trained_pipelines"][selected_model_name]
 
         input_cols = st.columns(min(4, len(features_list)))
         sample_inputs = {}
@@ -1390,7 +1597,7 @@ elif nav_page == "Valuation Categories":
                 )
 
         if st.button("Predict Valuation Category", width="stretch"):
-            val_pred = predict_single_valuation(rf_pipe, sample_inputs, features_list)
+            val_pred = predict_single_valuation(chosen_pipe, sample_inputs, features_list)
             st.success(f"Estimated Valuation Tier: **{val_pred['predicted_category']}**")
             if val_pred.get("class_probabilities"):
                 prob_df = pd.DataFrame(

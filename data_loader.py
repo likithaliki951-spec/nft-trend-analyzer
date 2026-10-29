@@ -346,3 +346,245 @@ def generate_sample_nft_csv() -> str:
 def export_dataframe_as_csv(df: pd.DataFrame) -> bytes:
     """Export normalized pandas DataFrame to UTF-8 encoded CSV bytes."""
     return df.to_csv(index=False).encode("utf-8")
+
+
+# ==============================================================================
+# Separate Market & Social Engagement Dataset Joining
+# ==============================================================================
+
+POTENTIAL_JOIN_KEYS = (
+    "collection",
+    "collection_slug",
+    "contract_address",
+    "contract",
+    "token_id",
+    "tokenid",
+    "permalink",
+    "slug",
+    "asset_id",
+    "name",
+    "id",
+    "sale_date",
+    "date",
+    "timestamp",
+    "datetime",
+)
+
+
+def discover_join_keys(df_market: pd.DataFrame, df_social: pd.DataFrame) -> list[str]:
+    """Identify common join key candidate columns present in both datasets.
+
+    Prioritizes canonical NFT collection, asset, and temporal keys before other common columns.
+    """
+    if df_market is None or df_social is None or df_market.empty or df_social.empty:
+        return []
+
+    market_cols = list(df_market.columns)
+    social_cols = list(df_social.columns)
+
+    # 1. Exact matches
+    exact_matches = set(market_cols).intersection(set(social_cols))
+
+    # 2. Case-insensitive matches (mapping lower -> original in df_market)
+    market_lower_map = {c.lower(): c for c in market_cols}
+    social_lower_map = {c.lower(): c for c in social_cols}
+    common_lowers = set(market_lower_map.keys()).intersection(set(social_lower_map.keys()))
+
+    discovered: list[str] = []
+    # Prioritize POTENTIAL_JOIN_KEYS
+    for key in POTENTIAL_JOIN_KEYS:
+        k_low = key.lower()
+        if k_low in common_lowers:
+            actual_col = market_lower_map[k_low]
+            if actual_col not in discovered:
+                discovered.append(actual_col)
+
+    # Add remaining exact matches
+    for col in sorted(exact_matches):
+        if col not in discovered:
+            discovered.append(col)
+
+    # Add remaining case-insensitive matches
+    for k_low in sorted(common_lowers):
+        actual_col = market_lower_map[k_low]
+        if actual_col not in discovered:
+            discovered.append(actual_col)
+
+    return discovered
+
+
+def validate_join_keys(
+    df_market: pd.DataFrame, df_social: pd.DataFrame, join_key: str
+) -> dict[str, Any]:
+    """Validate schema compatibility, key overlaps, null counts, and many-to-many risks for a proposed join."""
+    if df_market is None or df_market.empty:
+        raise ValueError("Market dataset is empty or undefined.")
+    if df_social is None or df_social.empty:
+        raise ValueError("Social dataset is empty or undefined.")
+
+    # Locate column in both DataFrames (case-insensitive fallback if needed)
+    market_col = None
+    for c in df_market.columns:
+        if c == join_key or c.lower() == join_key.lower():
+            market_col = c
+            break
+
+    social_col = None
+    for c in df_social.columns:
+        if c == join_key or c.lower() == join_key.lower():
+            social_col = c
+            break
+
+    if not market_col:
+        raise ValueError(f"Join key '{join_key}' was not found in the market dataset columns.")
+    if not social_col:
+        raise ValueError(f"Join key '{join_key}' was not found in the social dataset columns.")
+
+    # Clean key series safely (trimming whitespace while preserving case)
+    m_keys = df_market[market_col].dropna().astype(str).str.strip()
+    s_keys = df_social[social_col].dropna().astype(str).str.strip()
+
+    market_nulls = int(df_market[market_col].isna().sum())
+    social_nulls = int(df_social[social_col].isna().sum())
+
+    market_total = len(df_market)
+    social_total = len(df_social)
+
+    market_uniques = int(m_keys.nunique())
+    social_uniques = int(s_keys.nunique())
+
+    market_duplicates = len(m_keys) - market_uniques
+    social_duplicates = len(s_keys) - social_uniques
+
+    set_market = set(m_keys.unique())
+    set_social = set(s_keys.unique())
+    overlap_keys = set_market.intersection(set_social)
+    overlap_count = len(overlap_keys)
+
+    market_overlap_pct = (overlap_count / max(1, market_uniques)) * 100.0
+    social_overlap_pct = (overlap_count / max(1, social_uniques)) * 100.0
+
+    is_many_to_many = market_duplicates > 0 and social_duplicates > 0
+
+    warnings: list[str] = []
+    if overlap_count == 0:
+        warnings.append(
+            f"Zero matching keys between datasets on '{join_key}'. An inner join will yield an empty table."
+        )
+    elif market_overlap_pct < 20.0 or social_overlap_pct < 20.0:
+        warnings.append(
+            f"Low key overlap: only {overlap_count} unique keys match ({market_overlap_pct:.1f}% of market, "
+            f"{social_overlap_pct:.1f}% of social)."
+        )
+
+    if is_many_to_many:
+        warnings.append(
+            f"Many-to-many relationship detected: duplicate values of '{join_key}' exist in both datasets "
+            f"({market_duplicates} in market, {social_duplicates} in social). "
+            f"This may multiply row counts via cartesian expansion."
+        )
+
+    if market_nulls > 0:
+        warnings.append(f"Market dataset contains {market_nulls} null/missing join keys.")
+    if social_nulls > 0:
+        warnings.append(f"Social dataset contains {social_nulls} null/missing join keys.")
+
+    return {
+        "join_key": join_key,
+        "market_column": market_col,
+        "social_column": social_col,
+        "market_rows": market_total,
+        "social_rows": social_total,
+        "market_nulls": market_nulls,
+        "social_nulls": social_nulls,
+        "market_unique_keys": market_uniques,
+        "social_unique_keys": social_uniques,
+        "market_duplicates": market_duplicates,
+        "social_duplicates": social_duplicates,
+        "overlap_unique_count": overlap_count,
+        "market_overlap_pct": round(market_overlap_pct, 2),
+        "social_overlap_pct": round(social_overlap_pct, 2),
+        "is_many_to_many": is_many_to_many,
+        "warnings": warnings,
+    }
+
+
+def join_market_and_social_datasets(
+    df_market: pd.DataFrame,
+    df_social: pd.DataFrame,
+    join_key: str,
+    join_type: str = "inner",
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Safely combine separate market/transaction and social engagement datasets into a unified analysis schema.
+
+    Enforces column alignment, strips whitespace on join keys, warns against many-to-many Cartesian explosions,
+    and returns comprehensive join diagnostic statistics.
+    """
+    valid_types = ("inner", "left", "right", "outer")
+    join_type_norm = join_type.lower()
+    if join_type_norm not in valid_types:
+        raise ValueError(f"Invalid join_type '{join_type}'. Supported: {', '.join(valid_types)}.")
+
+    validation = validate_join_keys(df_market, df_social, join_key)
+    m_col = validation["market_column"]
+    s_col = validation["social_column"]
+
+    # Copy to avoid mutating user DataFrames
+    m_df = df_market.copy()
+    s_df = df_social.copy()
+
+    # Clean join keys (strip whitespace if object/string type)
+    if m_df[m_col].dtype == object or pd.api.types.is_string_dtype(m_df[m_col]):
+        m_df[m_col] = m_df[m_col].astype(str).str.strip()
+    if s_df[s_col].dtype == object or pd.api.types.is_string_dtype(s_df[s_col]):
+        s_df[s_col] = s_df[s_col].astype(str).str.strip()
+
+    # If column names differ in case, align to market column name
+    if m_col != s_col:
+        s_df = s_df.rename(columns={s_col: m_col})
+        effective_key = m_col
+    else:
+        effective_key = m_col
+
+    # Perform merge with informative suffixes for non-key column overlaps
+    joined_df = pd.merge(
+        m_df,
+        s_df,
+        on=effective_key,
+        how=join_type_norm,
+        suffixes=("_market", "_social"),
+    )
+
+    # Clean and normalize merged dataframe
+    clean_joined, clean_stats = clean_dataframe(joined_df)
+
+    # Calculate matched records
+    m_non_keys = [c for c in m_df.columns if c != effective_key]
+    s_non_keys = [c for c in s_df.columns if c != effective_key]
+
+    if m_non_keys and s_non_keys:
+        sample_m_col = m_non_keys[0] if m_non_keys[0] in clean_joined.columns else f"{m_non_keys[0]}_market"
+        sample_s_col = s_non_keys[0] if s_non_keys[0] in clean_joined.columns else f"{s_non_keys[0]}_social"
+        matched_mask = clean_joined[sample_m_col].notna() & clean_joined[sample_s_col].notna()
+        matched_count = int(matched_mask.sum())
+    else:
+        matched_count = len(clean_joined)
+
+    diagnostics: dict[str, Any] = {
+        "join_key": effective_key,
+        "join_type": join_type_norm,
+        "market_rows": len(df_market),
+        "social_rows": len(df_social),
+        "joined_rows": len(clean_joined),
+        "matched_records": matched_count,
+        "unmatched_market_records": max(0, len(clean_joined) - matched_count) if join_type_norm in ("left", "outer") else 0,
+        "unmatched_social_records": max(0, len(clean_joined) - matched_count) if join_type_norm in ("right", "outer") else 0,
+        "market_unique_keys": validation["market_unique_keys"],
+        "social_unique_keys": validation["social_unique_keys"],
+        "overlap_unique_count": validation["overlap_unique_count"],
+        "is_many_to_many": validation["is_many_to_many"],
+        "warnings": validation["warnings"],
+        "cleaning_stats": clean_stats,
+    }
+
+    return clean_joined, diagnostics
