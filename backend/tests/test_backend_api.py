@@ -1579,3 +1579,41 @@ def test_transparent_pbkdf2_to_bcrypt_upgrade_supabase_mock():
         new_hash = patch_call[1]["json"]["password_hash"]
         assert new_hash.startswith(("$2b$", "$2a$"))
         assert not new_hash.startswith("pbkdf2_sha256$")
+
+
+def test_production_mode_refuses_sqlite_user_store_fallback():
+    """Verify production mode refuses local SQLite user store fallback (Phase 2 & 3 hardening)."""
+    from app.auth import create_user, get_user_by_email, update_user_password, get_all_users_admin
+    from app.config import settings
+
+    test_email = f"prod_failclosed_{uuid.uuid4().hex[:6]}@nfttrends.io"
+    orig_env = settings.IS_PRODUCTION
+    orig_url = settings.SUPABASE_URL
+    orig_key = settings.SUPABASE_SERVICE_ROLE_KEY
+
+    try:
+        settings.IS_PRODUCTION = True
+        settings.SUPABASE_URL = ""
+        settings.SUPABASE_SERVICE_ROLE_KEY = ""
+
+        # 1. create_user fails closed without SQLite fallback
+        ok, msg = create_user(test_email, "Prod Fail Closed", "$2b$12$fakehashfortestingonly", "analyst")
+        assert ok is False
+        assert "Production mode requires SUPABASE_URL" in msg
+
+        # 2. get_user_by_email returns None in production without Supabase
+        user = get_user_by_email(test_email)
+        assert user is None
+
+        # 3. update_user_password returns False in production without Supabase
+        updated = update_user_password(test_email, "$2b$12$newfakehash")
+        assert updated is False
+
+        # 4. get_all_users_admin returns empty list in production without Supabase
+        admin_users = get_all_users_admin()
+        assert admin_users == []
+
+    finally:
+        settings.IS_PRODUCTION = orig_env
+        settings.SUPABASE_URL = orig_url
+        settings.SUPABASE_SERVICE_ROLE_KEY = orig_key

@@ -123,6 +123,9 @@ def verify_password(password: str, stored_hash: str) -> bool:
 
 def init_user_db() -> None:
     """Initialize local SQLite user table if Supabase is offline (dev only)."""
+    if settings.IS_PRODUCTION:
+        return  # SEC-02: Do NOT initialize local SQLite user tables in production
+
     conn = sqlite3.connect(settings.SQLITE_PATH)
     try:
         with conn:
@@ -159,6 +162,9 @@ def init_user_db() -> None:
 
 def init_reset_token_db() -> None:
     """Initialize persistent schema for single-use password reset tokens (SEC-04)."""
+    if settings.IS_PRODUCTION:
+        return  # SEC-04: Do NOT initialize local SQLite reset token tables in production
+
     conn = sqlite3.connect(settings.SQLITE_PATH)
     try:
         with conn:
@@ -204,6 +210,9 @@ def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
         except Exception:
             pass
 
+    if settings.IS_PRODUCTION:
+        return None  # Never read local SQLite in production
+
     # SQLite fallback
     conn = sqlite3.connect(settings.SQLITE_PATH)
     conn.row_factory = sqlite3.Row
@@ -228,7 +237,37 @@ def create_user(email: str, name: str, password_hash: str, role: str = "analyst"
     if get_user_by_email(clean_email):
         return False, "An account with this email address already exists."
 
-    # Insert into Supabase if configured
+    # Production Mode: MUST persist to Supabase PostgreSQL (fail closed)
+    if settings.IS_PRODUCTION:
+        if not settings.has_supabase():
+            return False, "Production mode requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to be configured. Local database fallback is strictly disabled."
+
+        url = f"{settings.SUPABASE_URL}/rest/v1/registered_users"
+        headers = {
+            "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation",
+        }
+        payload = {
+            "id": user_id,
+            "email": clean_email,
+            "name": name.strip(),
+            "password_hash": password_hash,
+            "role": role,
+            "created_at": now_iso,
+        }
+        try:
+            res = requests.post(url, headers=headers, json=payload, timeout=5.0)
+            if res.status_code in (200, 201):
+                return True, user_id
+            if res.status_code == 409 or "duplicate" in res.text.lower():
+                return False, "An account with this email address already exists."
+            return False, f"Failed to register user in production database (HTTP {res.status_code})."
+        except Exception as exc:
+            return False, f"Production database connection error: {exc}"
+
+    # Development Mode: Insert into Supabase if configured
     if settings.has_supabase():
         try:
             url = f"{settings.SUPABASE_URL}/rest/v1/registered_users"
@@ -248,25 +287,25 @@ def create_user(email: str, name: str, password_hash: str, role: str = "analyst"
             }
             res = requests.post(url, headers=headers, json=payload, timeout=5.0)
             if res.status_code in (200, 201):
-                if not settings.IS_PRODUCTION:
-                    try:
-                        conn = sqlite3.connect(settings.SQLITE_PATH)
-                        with conn:
-                            conn.execute(
-                                """
-                                INSERT OR REPLACE INTO registered_users (id, email, name, password_hash, role, created_at)
-                                VALUES (?, ?, ?, ?, ?, ?)
-                                """,
-                                (user_id, clean_email, name.strip(), password_hash, role, now_iso),
-                            )
-                        conn.close()
-                    except Exception:
-                        pass
+                try:
+                    conn = sqlite3.connect(settings.SQLITE_PATH)
+                    with conn:
+                        conn.execute(
+                            """
+                            INSERT OR REPLACE INTO registered_users (id, email, name, password_hash, role, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                            """,
+                            (user_id, clean_email, name.strip(), password_hash, role, now_iso),
+                        )
+                    conn.close()
+                except Exception:
+                    pass
                 return True, user_id
         except Exception:
             pass
 
-    # Fallback to SQLite
+    # Development Fallback to SQLite
+    init_user_db()
     conn = sqlite3.connect(settings.SQLITE_PATH)
     try:
         with conn:
@@ -289,6 +328,28 @@ def create_user(email: str, name: str, password_hash: str, role: str = "analyst"
 def update_user_password(email: str, new_hash: str) -> bool:
     """Update password hash."""
     clean_email = email.strip().lower()
+
+    if settings.IS_PRODUCTION:
+        if not settings.has_supabase():
+            return False
+
+        url = f"{settings.SUPABASE_URL}/rest/v1/registered_users"
+        headers = {
+            "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
+            "Content-Type": "application/json",
+        }
+        try:
+            res = requests.patch(
+                url,
+                headers=headers,
+                params={"email": f"eq.{clean_email}"},
+                json={"password_hash": new_hash},
+                timeout=4.0,
+            )
+            return res.status_code in (200, 204)
+        except Exception:
+            return False
 
     if settings.has_supabase():
         try:
@@ -337,6 +398,9 @@ def get_all_users_admin() -> list[Dict[str, Any]]:
                 return res.json()
         except Exception:
             pass
+
+    if settings.IS_PRODUCTION:
+        return []
 
     conn = sqlite3.connect(settings.SQLITE_PATH)
     conn.row_factory = sqlite3.Row
