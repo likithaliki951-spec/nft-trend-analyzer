@@ -79,7 +79,7 @@ def test_password_forgot_and_reset_flow():
     """Test password reset workflow with secure out-of-band token generation."""
     from app.auth import create_password_reset_token
 
-    email = "test_reset_user@nfttrends.io"
+    email = f"test_reset_{uuid.uuid4().hex[:8]}@nfttrends.io"
     pwd1 = "InitialSecurePassword#2026"
     pwd2 = "UpdatedSecurePassword#2026"
 

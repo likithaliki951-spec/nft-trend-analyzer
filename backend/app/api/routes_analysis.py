@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 import pandas as pd
@@ -15,6 +16,7 @@ from app.schemas import (
 )
 from app.services.analysis_service import AnalysisService
 from app.services.report_export_service import ReportExportService
+from app.services.storage_service import StorageService
 
 router = APIRouter(prefix="/analysis", tags=["Analytics & Ingestion"])
 
@@ -30,18 +32,15 @@ def get_user_dataframe(user_email: str) -> pd.DataFrame:
     # Check PipelineService for active/restored dataset
     try:
         from app.services.pipeline_service import PipelineService
-        session = PipelineService.get_active_session(user_email)
-        df = session.get("dataframe")
-        if df is not None and not df.empty:
-            _USER_ACTIVE_DF[user_email] = df
-            return df
+        session = PipelineService.get_active_session(user_email, allow_demo_fallback=False)
+        if session and session.get("dataframe") is not None and not session["dataframe"].empty:
+            _USER_ACTIVE_DF[user_email] = session["dataframe"]
+            return session["dataframe"]
     except Exception:
         pass
 
-    # Default to synthetic educational dataset
-    df = AnalysisService.get_demo_dataset(n_rows=160)
-    _USER_ACTIVE_DF[user_email] = df
-    return df
+    # Default to synthetic educational dataset for preview queries (do not cache)
+    return AnalysisService.get_demo_dataset(n_rows=160)
 
 
 @router.post("/pipeline/upload-and-analyze")
@@ -81,7 +80,24 @@ async def get_active_dataset_metadata(
     """Retrieve metadata and analytical statuses for the user's currently active dataset."""
     from app.services.pipeline_service import PipelineService
 
-    session = PipelineService.get_active_session(user["email"])
+    session = PipelineService.get_active_session(user["email"], allow_demo_fallback=False)
+    if not session or session.get("dataframe") is None or session["dataframe"].empty:
+        return {
+            "success": True,
+            "has_active_dataset": False,
+            "project_id": None,
+            "dataset_name": None,
+            "is_demo": False,
+            "rows_count": 0,
+            "columns_count": 0,
+            "columns": [],
+            "features_detected": {},
+            "module_statuses": {},
+            "warnings": [],
+            "updated_at": None,
+            "message": "No active dataset found. Please upload a dataset or load demo data in Workspace.",
+        }
+
     bundle = session.get("bundle") or {}
     df = session.get("dataframe")
     rows_count = len(df) if df is not None else 0
@@ -89,8 +105,10 @@ async def get_active_dataset_metadata(
 
     return {
         "success": True,
+        "has_active_dataset": True,
         "project_id": session.get("project_id"),
         "dataset_name": session.get("dataset_name", "Active Dataset"),
+        "is_demo": session.get("is_demo", False),
         "rows_count": rows_count,
         "columns_count": cols_count,
         "columns": list(df.columns) if df is not None else [],
@@ -159,11 +177,25 @@ async def get_active_module_results(
 @router.get("/dataset/demo")
 async def load_demo_dataset(user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
     """Load verified educational demo dataset into user's active session."""
+    from app.services.pipeline_service import PipelineService, _USER_ACTIVE_SESSIONS
+    clean_email = user["email"].strip().lower()
     df = AnalysisService.get_demo_dataset(n_rows=160)
-    _USER_ACTIVE_DF[user["email"]] = df
+    _USER_ACTIVE_DF[clean_email] = df
+    demo_bundle = PipelineService._orchestrate_analysis_bundle(df, "Educational NFT Benchmark Dataset (Demo)")
+    demo_bundle["project_id"] = "demo-active-session"
+    _USER_ACTIVE_SESSIONS[clean_email] = {
+        "project_id": "demo-active-session",
+        "dataset_name": "Educational NFT Benchmark Dataset (Demo)",
+        "dataframe": df,
+        "bundle": demo_bundle,
+        "is_demo": True,
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
     return {
         "success": True,
         "message": "Demo dataset loaded successfully.",
+        "project_id": "demo-active-session",
+        "dataset_name": "Educational NFT Benchmark Dataset (Demo)",
         "rows": len(df),
         "columns": list(df.columns),
         "preview": df.head(10).to_dict(orient="records"),
@@ -181,11 +213,35 @@ async def upload_single_dataset(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty.")
 
     try:
+        from app.services.pipeline_service import PipelineService, _USER_ACTIVE_SESSIONS
+        clean_email = user["email"].strip().lower()
         cleaned_df, meta = AnalysisService.process_file_upload(file_bytes, file.filename or "upload.csv")
-        _USER_ACTIVE_DF[user["email"]] = cleaned_df
+        _USER_ACTIVE_DF[clean_email] = cleaned_df
+
+        bundle = PipelineService._orchestrate_analysis_bundle(cleaned_df, file.filename or "upload.csv")
+        save_ok, save_res = StorageService.save_project(
+            user_email=clean_email,
+            project_name=f"Upload - {file.filename or 'upload.csv'}",
+            dataset_name=file.filename or "upload.csv",
+            analysis_type="Single Dataset Upload",
+            summary_json=bundle,
+            dataframe=cleaned_df,
+        )
+        project_id = save_res if save_ok else "session-only"
+        bundle["project_id"] = project_id
+        _USER_ACTIVE_SESSIONS[clean_email] = {
+            "project_id": project_id,
+            "dataset_name": file.filename or "upload.csv",
+            "dataframe": cleaned_df,
+            "bundle": bundle,
+            "is_demo": False,
+            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+
         return {
             "success": True,
             "metadata": meta,
+            "project_id": project_id,
             "preview": cleaned_df.head(10).to_dict(orient="records"),
         }
     except Exception as exc:
@@ -209,15 +265,40 @@ async def upload_and_join_datasets(
     s_bytes = await social_file.read()
 
     try:
+        from app.services.pipeline_service import PipelineService, _USER_ACTIVE_SESSIONS
+        clean_email = user["email"].strip().lower()
         merged_df, diag = AnalysisService.join_datasets(
             m_bytes, market_file.filename or "market.csv",
             s_bytes, social_file.filename or "social.csv",
             market_key=market_key, social_key=social_key, how=join_type,
         )
-        _USER_ACTIVE_DF[user["email"]] = merged_df
+        _USER_ACTIVE_DF[clean_email] = merged_df
+
+        filename = f"Joined_{market_file.filename or 'market'}_{social_file.filename or 'social'}.csv"
+        bundle = PipelineService._orchestrate_analysis_bundle(merged_df, filename)
+        save_ok, save_res = StorageService.save_project(
+            user_email=clean_email,
+            project_name=f"Joined Dataset - {filename}",
+            dataset_name=filename,
+            analysis_type="Joined Market & Social Pipeline",
+            summary_json=bundle,
+            dataframe=merged_df,
+        )
+        project_id = save_res if save_ok else "session-only"
+        bundle["project_id"] = project_id
+        _USER_ACTIVE_SESSIONS[clean_email] = {
+            "project_id": project_id,
+            "dataset_name": filename,
+            "dataframe": merged_df,
+            "bundle": bundle,
+            "is_demo": False,
+            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+
         return {
             "success": True,
             "diagnostics": diag,
+            "project_id": project_id,
             "rows": len(merged_df),
             "columns": list(merged_df.columns),
             "preview": merged_df.head(10).to_dict(orient="records"),
@@ -322,6 +403,8 @@ async def export_analysis_report(
                 "Access-Control-Expose-Headers": "Content-Disposition",
             },
         )
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:
@@ -358,6 +441,8 @@ async def export_analysis_report_get(
                 "Access-Control-Expose-Headers": "Content-Disposition",
             },
         )
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:

@@ -175,41 +175,73 @@ class ReportExportService:
         custom_title: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Extract and structure all analytical results from active session or saved project."""
+        from fastapi import HTTPException, status
         clean_email = user_email.strip().lower()
         df: Optional[pd.DataFrame] = None
         bundle: Dict[str, Any] = {}
         dataset_name = "Active Dataset"
         actual_project_id = project_id or "active-session"
 
-        # 1. Attempt loading requested saved project
+        # 1. Attempt loading requested saved project if specific project_id provided
         if project_id and project_id not in ("active-session", "demo-active-session"):
+            project_meta = StorageService.get_project(project_id, clean_email)
+            if not project_meta:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Project '{project_id}' not found or access denied.",
+                )
             loaded_df, msg = StorageService.load_project_dataframe(project_id, clean_email)
-            if loaded_df is not None and not loaded_df.empty:
-                df = loaded_df
-                project_meta = StorageService.get_project(project_id, clean_email)
-                if project_meta:
-                    dataset_name = project_meta.get("dataset_name", dataset_name)
-                    summary = project_meta.get("summary_json") or {}
-                    if isinstance(summary, str):
-                        try:
-                            summary = json.loads(summary)
-                        except Exception:
-                            summary = {}
-                    bundle = summary
+            if loaded_df is None or loaded_df.empty:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Dataset for project '{project_id}' could not be loaded: {msg}",
+                )
+            df = loaded_df
+            actual_project_id = project_id
+            dataset_name = project_meta.get("dataset_name", dataset_name)
+            summary = project_meta.get("summary_json") or {}
+            if isinstance(summary, str):
+                try:
+                    summary = json.loads(summary)
+                except Exception:
+                    summary = {}
+            if "module_statuses" in summary and "price_trends" in summary:
+                bundle = summary
+            else:
+                bundle = PipelineService._orchestrate_analysis_bundle(df, dataset_name)
 
-        # 2. Fall back to active session
-        if df is None or df.empty or not bundle:
-            session = PipelineService.get_active_session(clean_email)
+        elif project_id == "demo-active-session":
+            # Explicit demo session request
+            session = PipelineService.get_active_session(clean_email, allow_demo_fallback=False)
+            if not session or not session.get("is_demo"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Educational demo session is not currently active.",
+                )
+            df = session.get("dataframe")
+            bundle = session.get("bundle") or {}
+            dataset_name = session.get("dataset_name", "Educational NFT Benchmark Dataset (Demo)")
+            actual_project_id = "demo-active-session"
+
+        else:
+            # 2. Retrieve active session (NO silent demo fallback)
+            session = PipelineService.get_active_session(clean_email, allow_demo_fallback=False)
+            if not session or session.get("dataframe") is None or session["dataframe"].empty:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="No analyzed dataset available for export. Please upload and analyze a dataset in the Workspace first.",
+                )
             df = session.get("dataframe")
             bundle = session.get("bundle") or {}
             dataset_name = session.get("dataset_name", dataset_name)
             actual_project_id = session.get("project_id", actual_project_id)
 
-        # Fallback to demo dataset if empty
+        # 3. Final validation: Dataframe MUST exist and not be empty
         if df is None or df.empty:
-            from app.services.analysis_service import AnalysisService
-            df = AnalysisService.get_demo_dataset(160)
-            bundle = PipelineService._orchestrate_analysis_bundle(df, "NFT Benchmark Demo")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No analyzed dataset available for export. Please upload and analyze a dataset in the Workspace first.",
+            )
 
         # Extract features and module blocks
         features_detected = bundle.get("features_detected") or {}

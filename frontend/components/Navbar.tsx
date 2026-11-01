@@ -15,8 +15,10 @@ export function Navbar({ onDatasetChanged }: { onDatasetChanged?: () => void }) 
   const fetchActiveMeta = async () => {
     try {
       const res = await api.getActiveDataset();
-      if (res && res.dataset_name) {
+      if (res && res.has_active_dataset && res.dataset_name) {
         setActiveMeta(res);
+      } else {
+        setActiveMeta(null);
       }
     } catch {
       // Ignore if offline
@@ -25,6 +27,15 @@ export function Navbar({ onDatasetChanged }: { onDatasetChanged?: () => void }) 
 
   useEffect(() => {
     fetchActiveMeta();
+
+    const handleDatasetChanged = () => {
+      fetchActiveMeta();
+    };
+
+    window.addEventListener("dataset-changed", handleDatasetChanged);
+    return () => {
+      window.removeEventListener("dataset-changed", handleDatasetChanged);
+    };
   }, []);
 
   const handleLoadDemo = async () => {
@@ -33,6 +44,7 @@ export function Navbar({ onDatasetChanged }: { onDatasetChanged?: () => void }) 
       const res = await api.loadDemoDataset();
       setStatusMsg(`Demo dataset active (${res.rows} records)`);
       await fetchActiveMeta();
+      window.dispatchEvent(new Event("dataset-changed"));
       if (onDatasetChanged) onDatasetChanged();
       setTimeout(() => setStatusMsg(null), 4000);
     } catch (err: any) {

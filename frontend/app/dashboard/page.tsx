@@ -23,8 +23,24 @@ export default function DashboardOverviewPage() {
   const [marketStats, setMarketStats] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isExportOpen, setIsExportOpen] = useState(false);
+  const [activeMeta, setActiveMeta] = useState<any>(null);
 
-  useEffect(() => {
+  const fetchActiveMeta = async () => {
+    try {
+      const res = await api.getActiveDataset();
+      if (res && res.has_active_dataset && res.dataset_name) {
+        setActiveMeta(res);
+      } else {
+        setActiveMeta(null);
+      }
+    } catch {
+      // Ignore
+    }
+  };
+
+  const loadData = () => {
+    setIsLoading(true);
+    fetchActiveMeta();
     api
       .getMarketOverview()
       .then((res) => {
@@ -32,6 +48,17 @@ export default function DashboardOverviewPage() {
       })
       .catch(() => {})
       .finally(() => setIsLoading(false));
+  };
+
+  useEffect(() => {
+    loadData();
+
+    const handleDatasetChanged = () => {
+      loadData();
+    };
+
+    window.addEventListener("dataset-changed", handleDatasetChanged);
+    return () => window.removeEventListener("dataset-changed", handleDatasetChanged);
   }, []);
 
   const sections = [
@@ -111,6 +138,9 @@ export default function DashboardOverviewPage() {
       <ExportModal
         isOpen={isExportOpen}
         onClose={() => setIsExportOpen(false)}
+        datasetName={activeMeta?.dataset_name}
+        projectId={activeMeta?.project_id}
+        hasActiveDataset={activeMeta?.has_active_dataset}
       />
 
       {/* KPI Cards Preview */}

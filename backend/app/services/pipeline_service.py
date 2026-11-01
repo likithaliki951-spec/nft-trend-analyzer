@@ -47,7 +47,7 @@ _USER_ACTIVE_SESSIONS: Dict[str, Dict[str, Any]] = {}
 class PipelineService:
 
     @classmethod
-    def get_active_session(cls, user_email: str) -> Dict[str, Any]:
+    def get_active_session(cls, user_email: str, allow_demo_fallback: bool = False) -> Optional[Dict[str, Any]]:
         """Retrieve active dataset and analytical bundle for user, restoring from persistent storage if needed."""
         clean_email = user_email.strip().lower()
 
@@ -58,61 +58,59 @@ class PipelineService:
                 return session
 
         # 2. Restore most recent saved project from persistent storage
-        projects = StorageService.list_projects(clean_email)
-        if projects:
-            latest_project = projects[0]
-            project_id = str(latest_project.get("id"))
-            df, msg = StorageService.load_project_dataframe(project_id, clean_email)
-            if df is not None and not df.empty:
-                summary = latest_project.get("summary_json") or {}
-                if isinstance(summary, str):
-                    try:
-                        summary = json.loads(summary)
-                    except Exception:
-                        summary = {}
+        try:
+            projects = StorageService.list_projects(clean_email)
+            if projects:
+                latest_project = projects[0]
+                project_id = str(latest_project.get("id"))
+                df, msg = StorageService.load_project_dataframe(project_id, clean_email)
+                if df is not None and not df.empty:
+                    summary = latest_project.get("summary_json") or {}
+                    if isinstance(summary, str):
+                        try:
+                            summary = json.loads(summary)
+                        except Exception:
+                            summary = {}
 
-                # If project was saved with complete bundle, restore directly
-                if "module_statuses" in summary and "price_trends" in summary:
+                    # If project was saved with complete bundle, restore directly
+                    if "module_statuses" in summary and "price_trends" in summary:
+                        bundle = summary
+                    else:
+                        bundle = cls._orchestrate_analysis_bundle(df, latest_project.get("dataset_name", "Saved Dataset"))
+
                     session_data = {
                         "project_id": project_id,
                         "dataset_name": latest_project.get("dataset_name", "Saved Dataset"),
                         "dataframe": df,
-                        "bundle": summary,
+                        "bundle": bundle,
+                        "is_demo": False,
                         "updated_at": latest_project.get("updated_at", datetime.datetime.now(datetime.timezone.utc).isoformat()),
                     }
                     _USER_ACTIVE_SESSIONS[clean_email] = session_data
                     return session_data
+        except Exception as exc:
+            logger.warning(f"Could not restore saved project for {clean_email}: {exc}")
 
-                # Recompute analytical bundle for legacy saved project
-                bundle = cls._orchestrate_analysis_bundle(df, latest_project.get("dataset_name", "Saved Dataset"))
-                session_data = {
-                    "project_id": project_id,
-                    "dataset_name": latest_project.get("dataset_name", "Saved Dataset"),
-                    "dataframe": df,
-                    "bundle": bundle,
-                    "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                }
-                _USER_ACTIVE_SESSIONS[clean_email] = session_data
-                return session_data
+        # 3. Fallback only if explicitly permitted (e.g. for preview), but do NOT permanently cache as active session
+        if allow_demo_fallback:
+            demo_df = AnalysisService.get_demo_dataset(n_rows=160)
+            demo_bundle = cls._orchestrate_analysis_bundle(demo_df, "Educational NFT Benchmark Dataset (Demo)")
+            return {
+                "project_id": "demo-active-session",
+                "dataset_name": "Educational NFT Benchmark Dataset (Demo)",
+                "dataframe": demo_df,
+                "bundle": demo_bundle,
+                "is_demo": True,
+                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }
 
-        # 3. Default fallback: synthesize demo dataset and run complete pipeline once
-        demo_df = AnalysisService.get_demo_dataset(n_rows=160)
-        demo_bundle = cls._orchestrate_analysis_bundle(demo_df, "Educational NFT Benchmark Dataset (Demo)")
-        session_data = {
-            "project_id": "demo-active-session",
-            "dataset_name": "Educational NFT Benchmark Dataset (Demo)",
-            "dataframe": demo_df,
-            "bundle": demo_bundle,
-            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        }
-        _USER_ACTIVE_SESSIONS[clean_email] = session_data
-        return session_data
+        return None
 
     @classmethod
     def get_active_dataframe(cls, user_email: str) -> pd.DataFrame:
         """Helper returning the active DataFrame for the given user."""
-        session = cls.get_active_session(user_email)
-        return session.get("dataframe") or AnalysisService.get_demo_dataset(120)
+        session = cls.get_active_session(user_email, allow_demo_fallback=True)
+        return (session.get("dataframe") if session else None) or AnalysisService.get_demo_dataset(120)
 
     @classmethod
     def set_active_project(cls, project_id: str, user_email: str) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
@@ -143,6 +141,7 @@ class PipelineService:
             "dataset_name": project.get("dataset_name", "Saved Dataset"),
             "dataframe": df,
             "bundle": bundle,
+            "is_demo": False,
             "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
         _USER_ACTIVE_SESSIONS[clean_email] = session_data
@@ -207,6 +206,7 @@ class PipelineService:
             "dataset_name": filename,
             "dataframe": cleaned_df,
             "bundle": bundle,
+            "is_demo": False,
             "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
         _USER_ACTIVE_SESSIONS[clean_email] = session_data
