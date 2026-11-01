@@ -11,9 +11,17 @@ import os
 from pathlib import Path
 import secrets
 import sys
+import threading
 import time
 import tomllib
 from typing import Any
+
+try:
+    import bcrypt
+    _BCRYPT_AVAILABLE = True
+except ImportError:
+    bcrypt = None
+    _BCRYPT_AVAILABLE = False
 
 # Ensure project root is prioritized in sys.path for robust Streamlit Community Cloud module resolution
 _AUTH_ROOT = Path(__file__).resolve().parent
@@ -25,6 +33,66 @@ import streamlit as st
 AUTH_SESSION_KEY = "auth_session_token"
 AUTH_EXPIRY_KEY = "auth_session_expired"
 DEFAULT_SESSION_DURATION = 86400  # 24 hours in seconds
+
+# ==============================================================================
+# Rate Limiting & Brute-Force Login Attempt Protection
+# ==============================================================================
+
+_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+_RATE_LIMIT_LOCK = threading.RLock()
+MAX_LOGIN_ATTEMPTS = 5
+LOCKOUT_DURATION_SECONDS = 900  # 15-minute temporary lockout
+
+
+def check_login_rate_limit(email: str) -> tuple[bool, str, int]:
+    """Check if an email address is currently locked out from login attempts.
+
+    Returns:
+        (is_locked: bool, error_message: str, remaining_seconds: int)
+    """
+    clean_email = str(email).strip().lower()
+    now = time.time()
+    with _RATE_LIMIT_LOCK:
+        attempts = _LOGIN_ATTEMPTS.get(clean_email, [])
+        # Prune attempts older than the lockout window
+        active_attempts = [t for t in attempts if now - t < LOCKOUT_DURATION_SECONDS]
+        _LOGIN_ATTEMPTS[clean_email] = active_attempts
+
+        if len(active_attempts) >= MAX_LOGIN_ATTEMPTS:
+            oldest_attempt = min(active_attempts)
+            elapsed = now - oldest_attempt
+            remaining_seconds = max(1, int(LOCKOUT_DURATION_SECONDS - elapsed))
+            remaining_minutes = (remaining_seconds + 59) // 60
+            msg = (
+                f"Security Notice: Account temporarily locked due to {MAX_LOGIN_ATTEMPTS} failed sign-in attempts. "
+                f"Please wait {remaining_minutes} minute(s) before trying again."
+            )
+            return True, msg, remaining_seconds
+
+        return False, "", 0
+
+
+def record_login_failure(email: str) -> tuple[int, bool, int]:
+    """Record a failed login attempt and return (attempt_count, is_now_locked, remaining_seconds)."""
+    clean_email = str(email).strip().lower()
+    now = time.time()
+    with _RATE_LIMIT_LOCK:
+        attempts = _LOGIN_ATTEMPTS.get(clean_email, [])
+        active_attempts = [t for t in attempts if now - t < LOCKOUT_DURATION_SECONDS]
+        active_attempts.append(now)
+        _LOGIN_ATTEMPTS[clean_email] = active_attempts
+
+        count = len(active_attempts)
+        if count >= MAX_LOGIN_ATTEMPTS:
+            return count, True, LOCKOUT_DURATION_SECONDS
+        return count, False, 0
+
+
+def record_login_success(email: str) -> None:
+    """Clear failed login attempt history upon successful authentication."""
+    clean_email = str(email).strip().lower()
+    with _RATE_LIMIT_LOCK:
+        _LOGIN_ATTEMPTS.pop(clean_email, None)
 
 
 def _load_disk_secrets() -> dict[str, Any]:
@@ -42,11 +110,28 @@ def _load_disk_secrets() -> dict[str, Any]:
                 pass
     return {}
 
-def hash_password(password: str, iterations: int = 600000, salt: bytes | None = None) -> str:
-    """Hash a password using salted PBKDF2-HMAC-SHA256 with 600,000 iterations.
+def hash_password(
+    password: str,
+    method: str | None = None,
+    iterations: int = 600000,
+    salt: bytes | None = None,
+) -> str:
+    """Hash a password using bcrypt (primary) or salted PBKDF2-HMAC-SHA256 (fallback/configured).
 
-    Format: pbkdf2_sha256$<iterations>$<salt_hex>$<hash_hex>
+    Bcrypt format: $2b$12$...
+    PBKDF2 format: pbkdf2_sha256$<iterations>$<salt_hex>$<hash_hex>
     """
+    if method == "pbkdf2" or (not _BCRYPT_AVAILABLE and method != "bcrypt"):
+        if salt is None:
+            salt = secrets.token_bytes(16)
+        derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+        return f"pbkdf2_sha256${iterations}${salt.hex()}${derived.hex()}"
+
+    if _BCRYPT_AVAILABLE:
+        # Standard bcrypt with 12 work factor rounds
+        return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+
+    # Fallback to PBKDF2 if bcrypt is requested but not installed
     if salt is None:
         salt = secrets.token_bytes(16)
     derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
@@ -54,19 +139,52 @@ def hash_password(password: str, iterations: int = 600000, salt: bytes | None = 
 
 
 def verify_password(password: str, stored_hash: str) -> bool:
-    """Verify a plain password against a stored PBKDF2 hash using constant-time comparison."""
-    try:
-        parts = stored_hash.split("$")
-        if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
-            return False
-        iterations = int(parts[1])
-        salt = bytes.fromhex(parts[2])
-        expected_hash = parts[3]
-
-        derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
-        return hmac.compare_digest(derived.hex(), expected_hash)
-    except (ValueError, TypeError, IndexError):
+    """Verify a plain password against a stored bcrypt or PBKDF2 hash using constant-time comparison."""
+    if not stored_hash or not password:
         return False
+
+    clean_hash = str(stored_hash).strip()
+
+    # 1. Bcrypt hash verification ($2b$, $2a$, $2y$, or bcrypt$ prefix)
+    if clean_hash.startswith(("$2b$", "$2a$", "$2y$", "bcrypt$")):
+        if clean_hash.startswith("bcrypt$"):
+            clean_hash = clean_hash[7:]
+        if _BCRYPT_AVAILABLE:
+            try:
+                return bcrypt.checkpw(password.encode("utf-8"), clean_hash.encode("utf-8"))
+            except Exception:
+                return False
+        return False
+
+    # 2. PBKDF2-HMAC-SHA256 hash verification
+    if clean_hash.startswith("pbkdf2_sha256$"):
+        try:
+            parts = clean_hash.split("$")
+            if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
+                return False
+            iterations = int(parts[1])
+            salt = bytes.fromhex(parts[2])
+            expected_hash = parts[3]
+
+            derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+            return hmac.compare_digest(derived.hex(), expected_hash)
+        except (ValueError, TypeError, IndexError):
+            return False
+
+    # 3. Scrypt hash verification (if present)
+    if clean_hash.startswith("scrypt$"):
+        try:
+            parts = clean_hash.split("$")
+            if len(parts) == 5:
+                n, r, p = int(parts[1]), int(parts[2]), int(parts[3])
+                salt = bytes.fromhex(parts[4])
+                expected = parts[5]
+                derived = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=n, r=r, p=p)
+                return hmac.compare_digest(derived.hex(), expected)
+        except Exception:
+            return False
+
+    return False
 
 
 # ==============================================================================
@@ -335,12 +453,20 @@ def authenticate_user(
 ) -> tuple[bool, dict[str, Any] | str]:
     """Validate user credentials against configured password hashes or persistent user accounts.
 
-    Returns (True, user_payload) on success, or (False, error_message) on failure.
-    Propagates database connectivity, permission, or service outages explicitly.
+    Enforces:
+    - Account rate limiting and brute-force attempt lockout
+    - Salted bcrypt and PBKDF2 hash verification
+    - Transparent in-place password hash upgrades to bcrypt
+    - Propagates database connectivity or permission errors explicitly
     """
     norm_email = email.strip().lower()
     if not norm_email or not password:
         return False, "Please provide both email address and password."
+
+    # Check brute-force login rate limiting
+    is_locked, lockout_msg, _ = check_login_rate_limit(norm_email)
+    if is_locked:
+        return False, lockout_msg
 
     import user_store
 
@@ -367,11 +493,38 @@ def authenticate_user(
         )
 
     if not user:
-        return False, "Invalid email address or password."
+        count, is_now_locked, _ = record_login_failure(norm_email)
+        if is_now_locked:
+            return (
+                False,
+                f"Security Warning: Account temporarily locked due to {MAX_LOGIN_ATTEMPTS} failed sign-in attempts. "
+                "Please wait 15 minutes before trying again.",
+            )
+        rem = MAX_LOGIN_ATTEMPTS - count
+        return False, f"Invalid email address or password. ({rem} sign-in attempt{'s' if rem != 1 else ''} remaining before lockout.)"
 
     stored_hash = user.get("password_hash", "")
     if not verify_password(password, stored_hash):
-        return False, "Invalid email address or password."
+        count, is_now_locked, _ = record_login_failure(norm_email)
+        if is_now_locked:
+            return (
+                False,
+                f"Security Warning: Account temporarily locked due to {MAX_LOGIN_ATTEMPTS} failed sign-in attempts. "
+                "Please wait 15 minutes before trying again.",
+            )
+        rem = MAX_LOGIN_ATTEMPTS - count
+        return False, f"Invalid email address or password. ({rem} sign-in attempt{'s' if rem != 1 else ''} remaining before lockout.)"
+
+    # Authentication succeeded: reset rate limiter
+    record_login_success(norm_email)
+
+    # Transparent migration: upgrade legacy PBKDF2 hashes to bcrypt in active database
+    if db_user and stored_hash.startswith("pbkdf2_sha256$") and _BCRYPT_AVAILABLE:
+        try:
+            new_bcrypt_hash = hash_password(password, method="bcrypt")
+            user_store.update_user_password_hash(norm_email, new_bcrypt_hash, db_path=db_path)
+        except Exception:
+            pass
 
     return True, {
         "email": user["email"],
@@ -446,21 +599,100 @@ def logout_user() -> None:
 # ==============================================================================
 
 def render_login_page() -> None:
-    """Render the dark-themed login interface and public application branding."""
+    """Render the institutional-grade, dark-themed login and registration interface."""
+    import user_store
+
     st.markdown(
         """
-        <div style="text-align: center; margin-top: 1.5rem; margin-bottom: 2rem;">
-            <div style="font-size: 2.2rem; font-weight: 800; letter-spacing: -0.03em; color: #f8fafc;">
-                ⚡ NFT Trend Analyzer
+        <style>
+        .auth-container {
+            max-width: 520px;
+            margin: 0 auto;
+            padding: 2rem 1.5rem;
+        }
+        .auth-brand-title {
+            font-size: 2.1rem;
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 50%, #94a3b8 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-align: center;
+            margin-bottom: 0.3rem;
+        }
+        .auth-brand-subtitle {
+            font-size: 0.92rem;
+            color: #94a3b8;
+            text-align: center;
+            line-height: 1.45;
+            margin-bottom: 1.2rem;
+        }
+        .auth-card {
+            background: #111827;
+            border: 1px solid #1f2937;
+            border-radius: 14px;
+            padding: 24px 26px;
+            box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.6);
+            margin-bottom: 1.5rem;
+        }
+        .auth-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+            border-bottom: 1px solid #1f2937;
+            padding-bottom: 0.8rem;
+        }
+        .auth-pill {
+            font-size: 0.72rem;
+            font-weight: 600;
+            padding: 3px 9px;
+            border-radius: 9999px;
+            border: 1px solid;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .pwd-req-box {
+            background: #0f172a;
+            border: 1px solid #1e293b;
+            border-radius: 8px;
+            padding: 10px 14px;
+            margin-top: 10px;
+            margin-bottom: 12px;
+            font-size: 0.78rem;
+            color: #94a3b8;
+        }
+        .pwd-req-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 3px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Top Branding Header
+    st.markdown(
+        """
+        <div style="text-align: center; margin-top: 1.2rem; margin-bottom: 1.8rem;">
+            <div style="display: inline-flex; align-items: center; gap: 8px; margin-bottom: 0.4rem;">
+                <span style="font-size: 2rem;">⚡</span>
+                <span class="auth-brand-title">NFT Trend Analyzer</span>
             </div>
-            <div style="font-size: 0.95rem; color: #94a3b8; margin-top: 0.4rem; max-width: 580px; margin-left: auto; margin-right: auto;">
-                Time-Series Market Intelligence, Leak-Free Machine Learning, & Valuation Categorization
+            <div class="auth-brand-subtitle">
+                Institutional Digital Asset Intelligence, Time-Series Forecasting & Machine Learning Valuation
             </div>
-            <div style="display: flex; justify-content: center; gap: 0.5rem; margin-top: 0.8rem;">
-                <span style="background: rgba(139, 92, 246, 0.15); color: #a78bfa; border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 9999px; padding: 2px 10px; font-size: 0.72rem; font-weight: 600;">
-                    🔒 AUTHENTICATION REQUIRED
+            <div style="display: flex; justify-content: center; gap: 0.5rem; flex-wrap: wrap;">
+                <span class="auth-pill" style="background: rgba(99, 102, 241, 0.12); color: #818cf8; border-color: rgba(99, 102, 241, 0.3);">
+                    🔒 ENTERPRISE SECURITY
                 </span>
-                <span style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 9999px; padding: 2px 10px; font-size: 0.72rem; font-weight: 600;">
+                <span class="auth-pill" style="background: rgba(16, 185, 129, 0.12); color: #34d399; border-color: rgba(16, 185, 129, 0.3);">
+                    🛡️ BCRYPT / RATE-LIMITED
+                </span>
+                <span class="auth-pill" style="background: rgba(56, 189, 248, 0.12); color: #38bdf8; border-color: rgba(56, 189, 248, 0.3);">
                     v2.4.0
                 </span>
             </div>
@@ -469,34 +701,35 @@ def render_login_page() -> None:
         unsafe_allow_html=True,
     )
 
-    # Session expiration alert
+    # Session expiration notification
     if st.session_state.get(AUTH_EXPIRY_KEY):
         st.warning(
-            "⏳ Your session has expired. For your security, please sign in again.",
+            "⏳ Your session has expired. For your security, please sign in again with your credentials.",
             icon="⚠️",
         )
 
-    # Centered login card
-    col_left, col_center, col_right = st.columns([1, 1.8, 1])
-    with col_center:
-        import user_store
+    # Centered Form Grid
+    _, col_form, _ = st.columns([1, 2, 1])
 
+    with col_form:
         storage_info = user_store.get_storage_info()
         storage_badge_color = "#10b981" if storage_info["is_cloud_persistent"] else "#f59e0b"
 
         st.markdown(
             f"""
-            <div style="background: #131b2e; border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 12px; padding: 20px 24px 24px 24px; box-shadow: 0 8px 32px rgba(0,0,0,0.4); margin-bottom: 1.5rem;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;">
-                    <div style="font-size: 1.2rem; font-weight: 700; color: #f1f5f9;">
-                        Research Terminal Access
+            <div class="auth-card">
+                <div class="auth-card-header">
+                    <div>
+                        <div style="font-size: 1.15rem; font-weight: 700; color: #f8fafc;">
+                            Research Terminal Access
+                        </div>
+                        <div style="font-size: 0.78rem; color: #64748b; margin-top: 2px;">
+                            Sign in to access your models, datasets, and project history
+                        </div>
                     </div>
-                    <span style="font-size: 0.7rem; color: {storage_badge_color}; background: rgba(255,255,255,0.05); padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1);">
+                    <span style="font-size: 0.7rem; color: {storage_badge_color}; background: rgba(255,255,255,0.04); padding: 4px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); font-weight: 600;">
                         ● {html.escape(storage_info["backend"])}
                     </span>
-                </div>
-                <div style="font-size: 0.8rem; color: #64748b; margin-bottom: 1rem;">
-                    Sign in with existing credentials or register a new research account.
                 </div>
             """,
             unsafe_allow_html=True,
@@ -504,69 +737,123 @@ def render_login_page() -> None:
 
         tab_login, tab_register = st.tabs(["🔑 Sign In", "📝 Create Account"])
 
+        # ----------------------------------------------------------------------
+        # Tab 1: SIGN IN
+        # ----------------------------------------------------------------------
         with tab_login:
             with st.form("login_form", clear_on_submit=False):
-                email_placeholder = "admin@yourfirm.com"
                 login_email = st.text_input(
-                    "Work Email",
-                    placeholder=email_placeholder,
-                    help="Your registered analyst or administrator email address.",
+                    "Work Email Address",
+                    value="",
+                    placeholder="name@organization.com",
+                    help="Enter your registered analyst or administrator email address.",
                     key="login_email_input",
                 )
+
                 show_pwd = st.checkbox("Show password", key="login_show_pwd_chk")
+
                 login_password = st.text_input(
                     "Password",
+                    value="",
                     type="default" if show_pwd else "password",
-                    placeholder="Enter password",
-                    help="Your secure authentication key.",
+                    placeholder="Enter your password",
+                    help="Enter your secure account password.",
                     key="login_pwd_input",
                 )
 
                 submit_login = st.form_submit_button(
-                    "Sign In to Terminal",
+                    "Sign In to Research Terminal",
                     use_container_width=True,
                     type="primary",
                 )
 
                 if submit_login:
-                    with st.spinner("Verifying credentials..."):
-                        success, result = authenticate_user(login_email, login_password)
-                        if success and isinstance(result, dict):
-                            login_user(result)
-                            st.success("Authentication successful! Loading analytics environment...")
-                            st.rerun()
-                        else:
-                            st.error(f"Authentication failed: {result}")
+                    if not login_email.strip() or not login_password:
+                        st.error("Please enter both your email address and password.")
+                    else:
+                        with st.spinner("Authenticating credentials..."):
+                            success, result = authenticate_user(login_email, login_password)
+                            if success and isinstance(result, dict):
+                                login_user(result)
+                                st.success(f"Welcome back, {result.get('name', 'Analyst')}! Loading workspace...")
+                                st.rerun()
+                            else:
+                                st.error(str(result))
 
+        # ----------------------------------------------------------------------
+        # Tab 2: CREATE ACCOUNT
+        # ----------------------------------------------------------------------
         with tab_register:
             with st.form("register_form", clear_on_submit=False):
                 reg_name = st.text_input(
-                    "Full Name / Display Name",
-                    placeholder="Jane Doe",
-                    help="Your professional research name.",
+                    "Full Name",
+                    value="",
+                    placeholder="Alex Morgan",
+                    help="Your professional name or display handle.",
                     key="reg_name_input",
                 )
+
                 reg_email = st.text_input(
-                    "Work Email",
-                    placeholder="analyst@yourfirm.com",
-                    help="Work or personal email address (RFC 5322 formatted).",
+                    "Work Email Address",
+                    value="",
+                    placeholder="name@organization.com",
+                    help="Valid work or institutional email address.",
                     key="reg_email_input",
                 )
+
                 show_reg_pwd = st.checkbox("Show password", key="reg_show_pwd_chk")
+
                 reg_password = st.text_input(
                     "Create Password",
+                    value="",
                     type="default" if show_reg_pwd else "password",
-                    placeholder="At least 8 characters",
-                    help="Minimum 8 characters with at least one letter and one number or special character.",
+                    placeholder="Minimum 12 characters",
+                    help="Must be at least 12 characters and include uppercase, lowercase, numbers, and special characters.",
                     key="reg_pwd_input",
                 )
+
                 reg_password_confirm = st.text_input(
                     "Confirm Password",
+                    value="",
                     type="default" if show_reg_pwd else "password",
                     placeholder="Re-enter password",
                     help="Must match your password exactly.",
                     key="reg_pwd_confirm_input",
                 )
+
+                # Real-time Password Requirements & Strength Preview
+                st.markdown(
+                    """
+                    <div class="pwd-req-box">
+                        <div style="font-weight: 700; color: #cbd5e1; margin-bottom: 6px;">Password Requirements:</div>
+                        <div class="pwd-req-item">🔹 At least <b>12 characters</b> long</div>
+                        <div class="pwd-req-item">🔹 At least one <b>uppercase letter</b> (A-Z)</div>
+                        <div class="pwd-req-item">🔹 At least one <b>lowercase letter</b> (a-z)</div>
+                        <div class="pwd-req-item">🔹 At least one <b>numeric digit</b> (0-9)</div>
+                        <div class="pwd-req-item">🔹 At least one <b>special character</b> (!@#$%^&*...)</div>
+                        <div class="pwd-req-item">🔹 Must not be a common or easily guessable passphrase</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                # Password strength assessment if user has entered characters
+                if reg_password:
+                    strength = user_store.get_password_strength(reg_password, reg_email, reg_name)
+                    st.markdown(
+                        f"""
+                        <div style="margin-top: 4px; margin-bottom: 12px;">
+                            <div style="display: flex; justify-content: space-between; font-size: 0.75rem; margin-bottom: 4px;">
+                                <span style="color: #94a3b8;">Password Strength:</span>
+                                <span style="color: {strength['color']}; font-weight: 700;">{strength['label']}</span>
+                            </div>
+                            <div style="background: #1e293b; border-radius: 9999px; height: 6px; width: 100%; overflow: hidden;">
+                                <div style="background: {strength['color']}; height: 100%; width: {strength['percent']}%; transition: width 0.3s ease;"></div>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
 
                 submit_reg = st.form_submit_button(
                     "Create Analyst Account",
@@ -575,7 +862,7 @@ def render_login_page() -> None:
                 )
 
                 if submit_reg:
-                    with st.spinner("Creating account..."):
+                    with st.spinner("Validating and registering account..."):
                         try:
                             reg_success, reg_msg = user_store.register_user(
                                 reg_email, reg_name, reg_password, reg_password_confirm
@@ -600,22 +887,7 @@ def render_login_page() -> None:
                         except user_store.StorageError as exc:
                             st.error(f"Registration failed: Database storage error ({exc}).")
 
-        # Check if user accounts are configured in Streamlit secrets or database
-        try:
-            all_accounts = user_store.get_all_users()
-        except Exception:
-            all_accounts = {}
-        if not all_accounts:
-            st.warning(
-                "🔒 **Authentication Setup Required**\n\n"
-                "No user accounts are configured in Streamlit secrets or database.\n\n"
-                "You can register an account in the **Create Account** tab, or configure administrator credentials in "
-                "`.streamlit/secrets.toml` (locally) or Streamlit Community Cloud Secrets.\n\n"
-                "Generate an admin password hash via: `python -c \"import auth; print(auth.hash_password('YOUR_PASSWORD'))\"`",
-                icon="⚠️",
-            )
-
-        # Streamlit Native OIDC SSO Button (if authlib / OIDC is configured)
+        # Streamlit Native OIDC SSO Button (if configured)
         try:
             if hasattr(st, "secrets") and "auth" in st.secrets and hasattr(st, "login"):
                 st.markdown(
@@ -633,15 +905,17 @@ def render_login_page() -> None:
 
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # Public Feature & Security Overview (renders safely without exposing data)
+    # Public Feature & Security Overview
     col_a, col_b, col_c = st.columns(3)
     with col_a:
         st.markdown(
             """
-            <div style="background: rgba(19, 27, 46, 0.6); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 14px;">
-                <div style="font-weight: 600; color: #8b5cf6; font-size: 0.85rem; margin-bottom: 4px;">📊 7 Analytics Modules</div>
-                <div style="font-size: 0.75rem; color: #94a3b8; line-height: 1.4;">
-                    Market overview, time-series aggregation, social engagement correlations, SVR, and GRU sequence forecasting.
+            <div style="background: rgba(17, 24, 39, 0.7); border: 1px solid #1f2937; border-radius: 10px; padding: 16px; height: 100%;">
+                <div style="font-weight: 700; color: #818cf8; font-size: 0.88rem; margin-bottom: 6px;">
+                    📊 Multi-Modal Ingestion & PCA
+                </div>
+                <div style="font-size: 0.78rem; color: #94a3b8; line-height: 1.45;">
+                    Dual-dataset join engine with cardinality validation and dynamic PCA feature decomposition.
                 </div>
             </div>
             """,
@@ -650,10 +924,12 @@ def render_login_page() -> None:
     with col_b:
         st.markdown(
             """
-            <div style="background: rgba(19, 27, 46, 0.6); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 14px;">
-                <div style="font-weight: 600; color: #38bdf8; font-size: 0.85rem; margin-bottom: 4px;">🔒 Zero-Exposure Security</div>
-                <div style="font-size: 0.75rem; color: #94a3b8; line-height: 1.4;">
-                    CSV datasets are processed purely in ephemeral session memory. No user files are written to disk or third-party servers.
+            <div style="background: rgba(17, 24, 39, 0.7); border: 1px solid #1f2937; border-radius: 10px; padding: 16px; height: 100%;">
+                <div style="font-weight: 700; color: #38bdf8; font-size: 0.88rem; margin-bottom: 6px;">
+                    🔒 Institutional-Grade Security
+                </div>
+                <div style="font-size: 0.78rem; color: #94a3b8; line-height: 1.45;">
+                    Salted bcrypt hashing, brute-force rate-limiting, and strict user-isolated project history.
                 </div>
             </div>
             """,
@@ -662,10 +938,12 @@ def render_login_page() -> None:
     with col_c:
         st.markdown(
             """
-            <div style="background: rgba(19, 27, 46, 0.6); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 14px;">
-                <div style="font-weight: 600; color: #10b981; font-size: 0.85rem; margin-bottom: 4px;">🏷️ Valuation Intelligence</div>
-                <div style="font-size: 0.75rem; color: #94a3b8; line-height: 1.4;">
-                    Random Forest & Support Vector classification across price bands, plus live CoinGecko & OpenSea market stats.
+            <div style="background: rgba(17, 24, 39, 0.7); border: 1px solid #1f2937; border-radius: 10px; padding: 16px; height: 100%;">
+                <div style="font-weight: 700; color: #34d399; font-size: 0.88rem; margin-bottom: 6px;">
+                    🏷️ Multi-Model Valuation Suite
+                </div>
+                <div style="font-size: 0.78rem; color: #94a3b8; line-height: 1.45;">
+                    Random Forest, Gradient Boosting, SVM, and balanced Logistic Regression valuation bands.
                 </div>
             </div>
             """,
@@ -674,8 +952,8 @@ def render_login_page() -> None:
 
     st.markdown(
         """
-        <div style="text-align: center; margin-top: 2rem; font-size: 0.75rem; color: #475569;">
-            Need access or forgot your password? Contact your research administrator.
+        <div style="text-align: center; margin-top: 2rem; font-size: 0.75rem; color: #64748b;">
+            NFT Trend Analyzer &bull; Version 2.4.0 &bull; Secure Research Environment
         </div>
         """,
         unsafe_allow_html=True,

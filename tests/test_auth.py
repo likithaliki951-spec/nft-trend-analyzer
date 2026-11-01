@@ -26,10 +26,15 @@ from nft_analysis import make_synthetic_demo_data
 def test_hash_password_and_verify():
     pwd = "research-secret-pass-2026"
     stored_hash = hash_password(pwd)
-    assert stored_hash.startswith("pbkdf2_sha256$600000$")
+    assert stored_hash.startswith(("$2b$", "$2a$", "pbkdf2_sha256$600000$"))
     assert verify_password(pwd, stored_hash) is True
     assert verify_password("wrong-password", stored_hash) is False
     assert verify_password("", stored_hash) is False
+
+    # Also test explicit PBKDF2 hash backward compatibility
+    pbkdf2_hash = hash_password(pwd, method="pbkdf2")
+    assert pbkdf2_hash.startswith("pbkdf2_sha256$600000$")
+    assert verify_password(pwd, pbkdf2_hash) is True
 
 
 def test_verify_password_handles_corrupt_format():
@@ -277,7 +282,7 @@ def test_authenticate_registered_user_from_db(tmp_path):
     init_sqlite_db(test_db)
 
     test_email = f"analyst_{uuid.uuid4().hex[:8]}@nfttrends.io"
-    test_password = "RegisteredPass2026!"
+    test_password = "SecureResearchPass#2026"
 
     # Register user into isolated database
     reg_ok, msg = register_user(
@@ -300,6 +305,38 @@ def test_authenticate_registered_user_from_db(tmp_path):
     fail_ok, fail_msg = authenticate_user(test_email, "WrongPassword!", db_path=test_db)
     assert fail_ok is False
     assert "Invalid email address or password" in str(fail_msg)
+
+
+def test_login_rate_limiting_lockout():
+    """Verify that multiple failed sign-ins trigger rate-limit lockout and success resets counter."""
+    from auth import (
+        MAX_LOGIN_ATTEMPTS,
+        check_login_rate_limit,
+        record_login_failure,
+        record_login_success,
+    )
+
+    test_email = "brute_force_probe@nfttrends.io"
+    record_login_success(test_email)
+
+    for i in range(MAX_LOGIN_ATTEMPTS - 1):
+        attempts, is_locked, _ = record_login_failure(test_email)
+        assert is_locked is False
+
+    # 5th failed attempt triggers lockout
+    attempts, is_locked, rem_secs = record_login_failure(test_email)
+    assert is_locked is True
+    assert attempts == MAX_LOGIN_ATTEMPTS
+
+    # check_login_rate_limit reports locked
+    locked, msg, rem = check_login_rate_limit(test_email)
+    assert locked is True
+    assert "temporarily locked" in msg.lower()
+
+    # Successful login resets the counter
+    record_login_success(test_email)
+    locked, _, _ = check_login_rate_limit(test_email)
+    assert locked is False
 
 
 def test_production_mode_detection():

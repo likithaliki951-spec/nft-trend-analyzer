@@ -49,6 +49,40 @@ class DatabaseResponseError(StorageError):
 # Regular expression for RFC 5322 compliant email validation
 EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
 
+# Expanded list of common, weak, and leaked passwords to explicitly reject
+COMMON_WEAK_PASSWORDS = {
+    "password1234",
+    "password12345",
+    "password123456",
+    "admin123456!",
+    "welcome1234!",
+    "qwertyuiop12",
+    "123456789012",
+    "changeme1234!",
+    "passcode1234!",
+    "letmein12345!",
+    "iloveyou12345",
+    "monkey123456!",
+    "dragon123456!",
+    "football1234!",
+    "trustnoone123!",
+    "sunshine1234!",
+    "princess1234!",
+    "superman1234!",
+    "master123456!",
+    "login1234567!",
+    "default12345!",
+    "system123456!",
+    "terminal1234!",
+    "analyst12345!",
+    "nfttrends123!",
+    "correcthorse1!",
+    "administrator!",
+    "abc123456789!",
+    "p@ssword1234!",
+    "iloveyou123!",
+}
+
 # Re-entrant thread lock to serialize duplicate-registration checks and database writes
 _REGISTRATION_LOCK = threading.RLock()
 
@@ -61,20 +95,125 @@ def normalize_email(email: str) -> str:
     return str(email).strip().lower()
 
 
+def get_password_strength(password: str, user_email: str = "", user_name: str = "") -> dict[str, Any]:
+    """Calculate password strength score, component criteria, and user feedback.
+
+    Enforces:
+    - Minimum 12 characters
+    - At least one uppercase letter (A-Z)
+    - At least one lowercase letter (a-z)
+    - At least one number (0-9)
+    - At least one special character
+    - Not on common/weak password blacklist
+    - Does not contain user's name or email handle
+    """
+    pwd = str(password or "")
+    clean_email = normalize_email(user_email)
+    clean_name = str(user_name or "").strip().lower()
+
+    met_criteria = {
+        "min_length": len(pwd) >= 12,
+        "uppercase": any(c.isupper() for c in pwd),
+        "lowercase": any(c.islower() for c in pwd),
+        "digit": any(c.isdigit() for c in pwd),
+        "special": any(not c.isalnum() for c in pwd),
+        "not_common": pwd.strip().lower() not in COMMON_WEAK_PASSWORDS,
+    }
+
+    # Check for personal information in password
+    has_personal_info = False
+    if clean_email and "@" in clean_email:
+        handle = clean_email.split("@")[0].strip()
+        if len(handle) >= 3 and handle in pwd.lower():
+            has_personal_info = True
+    if clean_name:
+        for part in clean_name.split():
+            if len(part) >= 3 and part in pwd.lower():
+                has_personal_info = True
+    met_criteria["no_personal_info"] = not has_personal_info
+
+    # Scoring
+    score = 0
+    if met_criteria["min_length"]:
+        score += 1
+    if len(pwd) >= 16:
+        score += 1
+    if met_criteria["uppercase"] and met_criteria["lowercase"]:
+        score += 1
+    if met_criteria["digit"]:
+        score += 1
+    if met_criteria["special"]:
+        score += 1
+    if not met_criteria["not_common"] or not met_criteria["no_personal_info"]:
+        score = min(score, 1)
+
+    normalized_score = min(4, score)
+
+    strength_map = {
+        0: ("Very Weak", "#ef4444", 15),
+        1: ("Weak", "#f97316", 35),
+        2: ("Moderate", "#eab308", 60),
+        3: ("Strong", "#3b82f6", 85),
+        4: ("Very Strong", "#10b981", 100),
+    }
+    label, color, percent = strength_map[normalized_score]
+
+    suggestions = []
+    if not met_criteria["min_length"]:
+        suggestions.append("Minimum 12 characters required.")
+    if not met_criteria["uppercase"]:
+        suggestions.append("Add at least one uppercase letter (A-Z).")
+    if not met_criteria["lowercase"]:
+        suggestions.append("Add at least one lowercase letter (a-z).")
+    if not met_criteria["digit"]:
+        suggestions.append("Add at least one number (0-9).")
+    if not met_criteria["special"]:
+        suggestions.append("Add at least one special character (!@#$%^&*...).")
+    if not met_criteria["not_common"]:
+        suggestions.append("This password is too common or easily guessable.")
+    if not met_criteria["no_personal_info"]:
+        suggestions.append("Password must not contain parts of your name or email.")
+
+    is_valid = (
+        met_criteria["min_length"]
+        and met_criteria["uppercase"]
+        and met_criteria["lowercase"]
+        and met_criteria["digit"]
+        and met_criteria["special"]
+        and met_criteria["not_common"]
+        and met_criteria["no_personal_info"]
+    )
+
+    return {
+        "score": normalized_score,
+        "percent": percent,
+        "label": label,
+        "color": color,
+        "met_criteria": met_criteria,
+        "suggestions": suggestions,
+        "is_valid": is_valid,
+    }
+
+
 def validate_registration_inputs(
     email: str,
     name: str,
     password: str,
     password_confirm: str,
 ) -> tuple[bool, str]:
-    """Validate user registration inputs against security and format policies.
+    """Validate user registration inputs against enhanced security and format policies.
 
     Enforces:
     - Non-empty, trimmed fields
     - Name length >= 2 characters
     - Valid email syntax
-    - Password >= 8 characters
-    - Password complexity: requires at least one letter and at least one digit or symbol
+    - Password >= 12 characters
+    - At least one uppercase letter (A-Z)
+    - At least one lowercase letter (a-z)
+    - At least one number (0-9)
+    - At least one special character (!@#$%^&*...)
+    - Rejection of common/weak passwords
+    - Rejection of passwords containing user name or email handle
     - Password confirmation match
     """
     clean_name = str(name).strip()
@@ -93,12 +232,22 @@ def validate_registration_inputs(
 
     if not password:
         return False, "Please enter a password."
-    if len(password) < 8:
-        return False, "Password must be at least 8 characters long."
-    if not any(c.isalpha() for c in password):
-        return False, "Password must contain at least one letter."
-    if not (any(c.isdigit() for c in password) or any(not c.isalnum() for c in password)):
-        return False, "Password must contain at least one number or special character."
+    if len(password) < 12:
+        return False, "Password must be at least 12 characters long."
+    if not any(c.isupper() for c in password):
+        return False, "Password must contain at least one uppercase letter."
+    if not any(c.islower() for c in password):
+        return False, "Password must contain at least one lowercase letter."
+    if not any(c.isdigit() for c in password):
+        return False, "Password must contain at least one number."
+    if not any(not c.isalnum() for c in password):
+        return False, "Password must contain at least one special character."
+
+    strength = get_password_strength(password, clean_email, clean_name)
+    if not strength["met_criteria"]["not_common"]:
+        return False, "This password is too common or easily guessable. Please choose a more complex passphrase."
+    if not strength["met_criteria"]["no_personal_info"]:
+        return False, "Password must not contain parts of your name or email address."
 
     if password != password_confirm:
         return False, "Passwords do not match. Please re-enter your password confirmation."
@@ -273,6 +422,28 @@ def _sqlite_insert_user(
         return False, "An account with this email address is already registered."
     except Exception as exc:
         return False, f"Database error during registration: {exc}"
+    finally:
+        conn.close()
+
+
+def _sqlite_update_password_hash(
+    email: str,
+    new_hash: str,
+    db_path: Path | str | None = None,
+) -> bool:
+    """Update a user's password hash in SQLite (used for transparent password hash upgrades)."""
+    init_sqlite_db(db_path)
+    clean_email = normalize_email(email)
+    conn = _get_sqlite_connection(db_path)
+    try:
+        with conn:
+            cur = conn.execute(
+                "UPDATE registered_users SET password_hash = ? WHERE email = ?",
+                (new_hash, clean_email),
+            )
+            return cur.rowcount > 0
+    except Exception:
+        return False
     finally:
         conn.close()
 
@@ -531,6 +702,36 @@ def register_user(
 
         pwd_hash = hash_password(password)
         return _sqlite_insert_user(clean_email, clean_name, pwd_hash, "analyst", DEFAULT_SQLITE_PATH)
+
+
+def update_user_password_hash(
+    email: str,
+    new_hash: str,
+    db_path: Path | str | None = None,
+) -> bool:
+    """Update a user's password hash in the active backend for transparent algorithm upgrades."""
+    clean_email = normalize_email(email)
+    if db_path is not None:
+        return _sqlite_update_password_hash(clean_email, new_hash, db_path)
+
+    cfg = get_database_config()
+    if cfg["type"] == "sqlite":
+        return _sqlite_update_password_hash(clean_email, new_hash, DEFAULT_SQLITE_PATH)
+
+    # For Supabase:
+    url = f"{cfg['url']}/rest/v1/registered_users"
+    params = {"email": f"eq.{clean_email}"}
+    try:
+        res = requests.patch(
+            url,
+            headers=_supabase_headers(cfg["key"]),
+            params=params,
+            json={"password_hash": new_hash},
+            timeout=5.0,
+        )
+        return res.status_code in (200, 204)
+    except Exception:
+        return False
 
 
 def get_all_users(db_path: Path | str | None = None) -> dict[str, dict[str, Any]]:

@@ -49,13 +49,34 @@ ALTER TABLE public.registered_users ENABLE ROW LEVEL SECURITY;
 -- c) Zero exposure of password hashes or user data to public visitors or client-side code.
 -- -----------------------------------------------------------------------------
 
--- 6. Verification query to confirm table structure and columns
+-- 6. Create user_work_history table for persistent project and session storage
+CREATE TABLE IF NOT EXISTS public.user_work_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_email TEXT NOT NULL,
+    project_name TEXT NOT NULL,
+    dataset_name TEXT NOT NULL,
+    dataset_signature TEXT NOT NULL,
+    analysis_type TEXT NOT NULL,
+    summary_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    storage_path TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Index for fast user work history retrieval
+CREATE INDEX IF NOT EXISTS idx_work_hist_user_email
+ON public.user_work_history (LOWER(TRIM(user_email)), created_at DESC);
+
+-- Enable RLS for work history
+ALTER TABLE public.user_work_history ENABLE ROW LEVEL SECURITY;
+
+-- 7. Verification query to confirm table structure and columns
 SELECT
+    table_name,
     column_name,
     data_type,
-    is_nullable,
-    column_default
+    is_nullable
 FROM information_schema.columns
 WHERE table_schema = 'public'
-  AND table_name = 'registered_users'
-ORDER BY ordinal_position;
+  AND table_name IN ('registered_users', 'user_work_history')
+ORDER BY table_name, ordinal_position;

@@ -52,6 +52,8 @@ Thumbs.db
 private_data/
 *.csv
 *.tsv
+*.parquet
+.streamlit/storage/
 .env*
 .venv/
 __pycache__/
@@ -65,3 +67,8 @@ secrets.toml
 *.backup
 *.bak
 uv.lock
+
+# Next.js and backend storage
+.next/
+backend/storage/
+frontend/.next/

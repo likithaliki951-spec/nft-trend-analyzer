@@ -46,6 +46,14 @@ from data_loader import (
     validate_join_keys,
 )
 from ml_models import evaluate_extended_models
+from work_history import (
+    delete_project,
+    get_admin_system_metrics,
+    get_project,
+    list_user_projects,
+    load_project_dataframe,
+    save_project,
+)
 from nft_analysis import (
     clean_dataframe,
     compute_engagement_correlations,
@@ -675,11 +683,148 @@ def read_uploaded_csv(file_bytes: bytes) -> pd.DataFrame:
     return read_csv_with_fallback(file_bytes)
 
 
+def render_my_work_history(user: dict[str, Any]) -> None:
+    """Render the persistent work history and saved project management interface."""
+    user_email = user.get("email", "")
+    st.header("📁 My Work & Analysis History")
+    st.caption(
+        f"Revisit and manage your previously saved datasets, models, and analytical sessions. "
+        f"Your saved work is strictly isolated to your account (`{user_email}`)."
+    )
+
+    projects = list_user_projects(user_email)
+    if not projects:
+        st.info("ℹ️ No saved projects found in your history. Upload a dataset in the Analytics Workspace and save your analysis to revisit it anytime.")
+        return
+
+    st.subheader(f"Saved Research Projects ({len(projects)})")
+    for proj in projects:
+        pid = proj["id"]
+        summary = proj.get("summary", {})
+        created_str = proj.get("created_at", "")[:19].replace("T", " ")
+
+        with st.expander(f"📌 {proj['project_name']} — {proj['dataset_name']} ({created_str} UTC)", expanded=False):
+            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+            col_m1.metric("Rows", f"{summary.get('row_count', 'N/A'):,}" if isinstance(summary.get('row_count'), int) else "N/A")
+            col_m2.metric("Features", f"{summary.get('column_count', 'N/A')}")
+            col_m3.metric("Analysis Type", proj.get("analysis_type", "Standard"))
+            best_m = summary.get("best_model", "N/A")
+            col_m4.metric("Best Model", f"{best_m}")
+
+            st.caption(f"**Storage Reference:** `{proj.get('storage_path')}`")
+            if summary.get("columns"):
+                st.caption(f"**Indexed Columns:** {', '.join(str(c) for c in summary['columns'][:10])}{' ...' if len(summary['columns']) > 10 else ''}")
+
+            col_btn1, col_btn2 = st.columns([1, 1])
+            with col_btn1:
+                if st.button("📂 Reopen Analysis in Workspace", key=f"reopen_btn_{pid}", type="primary", use_container_width=True):
+                    reloaded_df = load_project_dataframe(pid, user_email)
+                    if reloaded_df is not None and not reloaded_df.empty:
+                        set_dataset(reloaded_df, proj["dataset_signature"], f"Saved: {proj['project_name']}")
+                        st.success(f"✓ Successfully reopened '{proj['project_name']}'! Switch to Analytics Workspace in the sidebar.")
+                        st.rerun()
+                    else:
+                        st.error("Could not load the dataset file for this project.")
+
+            with col_btn2:
+                confirm_del = st.checkbox("Confirm deletion", key=f"confirm_del_chk_{pid}")
+                if st.button("🗑️ Delete Project", key=f"del_btn_{pid}", disabled=not confirm_del, use_container_width=True):
+                    del_ok, del_msg = delete_project(pid, user_email)
+                    if del_ok:
+                        st.success(del_msg)
+                        st.rerun()
+                    else:
+                        st.error(del_msg)
+
+
+def render_admin_dashboard(user: dict[str, Any]) -> None:
+    """Render the professional administrator control center and system telemetry."""
+    st.header("👑 Administrator Command Console")
+    st.caption("Platform telemetry, storage health, user directory, and administrative controls.")
+
+    import os
+    import platform
+    import user_store
+
+    storage_info = user_store.get_storage_info()
+    sys_metrics = get_admin_system_metrics()
+
+    # System Overview KPIs
+    st.subheader("System Architecture & Storage Status")
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Storage Backend", storage_info.get("backend", "SQLite"))
+    k2.metric("Cloud Persistent", "Yes (PostgreSQL)" if storage_info.get("is_cloud_persistent") else "No (Local SQLite)")
+    k3.metric("Total Saved Projects", f"{sys_metrics.get('total_saved_projects', 0):,}")
+    k4.metric("Active Researchers", f"{sys_metrics.get('unique_users_with_history', 0):,}")
+
+    col_env1, col_env2 = st.columns(2)
+    with col_env1:
+        st.markdown(
+            f"""
+            <div style="background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 16px; margin-bottom: 1rem;">
+                <div style="font-weight: 700; color: #818cf8; margin-bottom: 8px;">🖥️ Runtime Environment</div>
+                <div style="font-size: 0.8rem; color: #cbd5e1; line-height: 1.6;">
+                    &bull; <b>Python Version:</b> {platform.python_version()}<br>
+                    &bull; <b>Streamlit Version:</b> {st.__version__}<br>
+                    &bull; <b>Operating System:</b> {platform.system()} {platform.release()}<br>
+                    &bull; <b>Server Process ID:</b> {os.getpid()}<br>
+                    &bull; <b>Storage Footprint:</b> {sys_metrics.get('total_storage_bytes', 0) / (1024 * 1024):.2f} MB
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with col_env2:
+        st.markdown(
+            """
+            <div style="background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 16px; margin-bottom: 1rem;">
+                <div style="font-weight: 700; color: #34d399; margin-bottom: 8px;">🔒 Data Privacy & Access Policy</div>
+                <div style="font-size: 0.8rem; color: #cbd5e1; line-height: 1.6;">
+                    &bull; <b>User Data Isolation:</b> Enforced by user email hashing and schema boundaries.<br>
+                    &bull; <b>Password Protection:</b> Salted bcrypt with transparent PBKDF2 upgrade.<br>
+                    &bull; <b>Brute-Force Rate Limiting:</b> Active (5 attempts / 15-min lockout).<br>
+                    &bull; <b>Admin Data Access:</b> Administrator can manage their own work history without snooping on private user datasets.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # Registered User Directory (safe, no password hashes)
+    st.subheader("Registered User Directory")
+    all_users = user_store.get_all_users()
+    user_rows = []
+    for em, udata in all_users.items():
+        user_rows.append({
+            "Email Address": em,
+            "Display Name": udata.get("name", em),
+            "System Role": udata.get("role", "analyst").upper(),
+            "Registration Date": udata.get("created_at", "-")[:19] if udata.get("created_at") else "Configured Admin",
+        })
+    if user_rows:
+        st.dataframe(pd.DataFrame(user_rows), width="stretch", hide_index=True)
+    else:
+        st.info("No registered users found.")
+
+    # Admin's Own Saved Work
+    st.divider()
+    st.subheader("Administrator's Personal Work History")
+    admin_projects = list_user_projects(user.get("email", ""))
+    if admin_projects:
+        for proj in admin_projects:
+            st.markdown(f"- 📌 **{proj['project_name']}** (`{proj['dataset_name']}`) &mdash; Saved {proj['created_at'][:19]}")
+    else:
+        st.caption("No personal work saved yet under administrator account.")
+
+
 # Inject custom styling
 inject_custom_theme()
 
 # Enforce authentication on every rerun (halts with st.stop() if not logged in)
 authenticated_user = require_authentication()
+if not authenticated_user:
+    st.stop()
 
 st.title(PROJECT_TITLE)
 st.caption(
@@ -690,7 +835,20 @@ st.caption(
 with st.sidebar:
     render_user_badge_and_logout(authenticated_user)
     st.divider()
-    st.markdown("### 🧭 Navigation & Data")
+
+    available_sections = ["📊 Analytics Workspace", "📁 My Work & History"]
+    if authenticated_user and authenticated_user.get("role") == "admin":
+        available_sections.append("👑 Admin Console")
+
+    app_section = st.radio(
+        "Navigation",
+        available_sections,
+        index=0,
+        key="app_main_section_choice",
+        help="Switch between the analytics workspace, saved personal project history, and administrator console.",
+    )
+    st.divider()
+    st.markdown("### 🧭 Data Ingestion")
     data_mode = st.radio(
         "Data Ingestion Mode",
         ["Single Unified File", "Join Market + Social Datasets"],
@@ -828,6 +986,38 @@ with st.sidebar:
             help="Download the currently cleaned and normalized dataset as standard CSV.",
         )
 
+        # Persistent Work History Saver
+        st.divider()
+        st.markdown("### 💾 Save to Work History")
+        with st.expander("Save Current Dataset & Model State", expanded=False):
+            save_name_default = f"Analysis {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            proj_name_input = st.text_input("Project Name", value=save_name_default, key="save_proj_name_sidebar")
+            analysis_type_choice = st.selectbox(
+                "Analysis Category",
+                ["Market Overview & Trends", "Predictive Valuation & PCA", "Valuation Categories"],
+                key="save_proj_type_sidebar",
+            )
+            if st.button("Save Project", key="save_proj_submit_btn", type="primary", use_container_width=True):
+                summary_data = {
+                    "row_count": len(dataframe),
+                    "column_count": len(dataframe.columns),
+                    "date_col": st.session_state.get("date_col"),
+                    "price_col": st.session_state.get("price_col"),
+                    "sales_col": st.session_state.get("sales_col"),
+                }
+                save_ok, save_msg, pid = save_project(
+                    user_email=authenticated_user.get("email", ""),
+                    project_name=proj_name_input,
+                    dataset_name=st.session_state.get("dataset_source", "Uploaded Dataset"),
+                    dataframe=dataframe,
+                    analysis_type=analysis_type_choice,
+                    summary_data=summary_data,
+                )
+                if save_ok:
+                    st.success("✓ Project saved! Access it anytime in '📁 My Work & History'.")
+                else:
+                    st.error(save_msg)
+
         # ML Diagnostics badge
         diag = st.session_state.get("dataset_diagnostics")
         if diag:
@@ -848,6 +1038,15 @@ with st.sidebar:
         nav_page = st.radio("Dashboard pages", PAGE_NAMES, label_visibility="visible")
         st.caption("Upload a supported dataset or choose the synthetic demo to begin.")
 
+# Handle top-level application section routing
+if "My Work" in app_section:
+    render_my_work_history(authenticated_user)
+    st.stop()
+
+if "Admin" in app_section and authenticated_user.get("role") == "admin":
+    render_admin_dashboard(authenticated_user)
+    st.stop()
+
 dataframe = st.session_state.get("dataset")
 if not isinstance(dataframe, pd.DataFrame) or dataframe.empty:
     st.markdown(
@@ -855,7 +1054,7 @@ if not isinstance(dataframe, pd.DataFrame) or dataframe.empty:
         <div class="empty-state-card">
             <div class="empty-state-title">Welcome to the NFT Trend Analyzer</div>
             <div class="empty-state-desc">
-                An interactive time-series analytics and machine-learning benchmarking dashboard. 
+                An interactive time-series analytics and machine-learning benchmarking dashboard.
                 Upload your transaction dataset in the sidebar or initialize the synthetic demo to begin exploring.
             </div>
             <div class="empty-feature-grid">
@@ -1073,10 +1272,10 @@ elif nav_page == "Social-Media Engagement":
     st.markdown(
         """
         <div class="research-callout">
-            <b>🔬 Scientific & Methodological Caveat:</b> 
-            Correlation does not establish causation. Observed statistical relationships between social activity 
-            (likes, comments, views) and NFT prices may reflect mutual exposure to wider crypto market sentiment, 
-            algorithmic amplification, or reverse causality (higher sales triggering viral posts). 
+            <b>🔬 Scientific & Methodological Caveat:</b>
+            Correlation does not establish causation. Observed statistical relationships between social activity
+            (likes, comments, views) and NFT prices may reflect mutual exposure to wider crypto market sentiment,
+            algorithmic amplification, or reverse causality (higher sales triggering viral posts).
             Interpret correlations as observational co-occurrences.
         </div>
         """,
@@ -1231,9 +1430,9 @@ elif nav_page == "Price Prediction":
     st.markdown(
         """
         <div class="research-callout">
-            <b>⚖️ Price Estimate Disclaimer:</b> 
-            Predictions produced by this dashboard are exploratory machine-learning estimates based strictly 
-            on historical training patterns within the uploaded file. They do not represent guaranteed future prices, 
+            <b>⚖️ Price Estimate Disclaimer:</b>
+            Predictions produced by this dashboard are exploratory machine-learning estimates based strictly
+            on historical training patterns within the uploaded file. They do not represent guaranteed future prices,
             valuation promises, or investment advice.
         </div>
         """,
@@ -1448,9 +1647,9 @@ elif nav_page == "Valuation Categories":
     st.markdown(
         """
         <div class="research-callout">
-            <b>🏷️ Valuation Category Framework:</b> 
-            Classifies assets into structured, contiguous price bands without conflating unsold assets with zero-price sales. 
-            Evaluates <b>Random Forest Classifier</b> and <b>Support Vector Machine (SVM)</b> classifiers on an 
+            <b>🏷️ Valuation Category Framework:</b>
+            Classifies assets into structured, contiguous price bands without conflating unsold assets with zero-price sales.
+            Evaluates <b>Random Forest Classifier</b> and <b>Support Vector Machine (SVM)</b> classifiers on an
             80/20 chronological split to benchmark category estimation.
         </div>
         """,
@@ -1628,9 +1827,9 @@ elif nav_page == "Live Market Intelligence":
     st.markdown(
         """
         <div class="research-callout">
-            <b>🌐 External Market Context:</b> 
-            Connects to official public endpoints for <b>CoinGecko</b> (ETH/USD spot and historical exchange rates) 
-            and <b>OpenSea API v2</b> (collection floor prices and supply metadata). Operates with in-memory caching, 
+            <b>🌐 External Market Context:</b>
+            Connects to official public endpoints for <b>CoinGecko</b> (ETH/USD spot and historical exchange rates)
+            and <b>OpenSea API v2</b> (collection floor prices and supply metadata). Operates with in-memory caching,
             timeout guards, and transparent offline fallback when credentials are absent.
         </div>
         """,
@@ -1706,7 +1905,7 @@ elif nav_page == "Live Market Intelligence":
                 st.markdown(
                     """
                     <div class="empty-feature-item">
-                        <b>Offline Demonstration Fallback:</b> Without an API key, the dashboard runs in full offline mode. 
+                        <b>Offline Demonstration Fallback:</b> Without an API key, the dashboard runs in full offline mode.
                         All CSV time series, pricing predictions, and valuation models operate with zero cloud dependency.
                     </div>
                     """,

@@ -11,6 +11,7 @@ from user_store import (
     DEFAULT_SQLITE_PATH,
     get_all_users,
     get_database_config,
+    get_password_strength,
     get_registered_user,
     get_storage_info,
     init_sqlite_db,
@@ -58,20 +59,61 @@ def test_validate_registration_inputs_catches_errors():
     assert valid is False
     assert "email" in msg.lower()
 
-    # Short password
-    valid, msg = validate_registration_inputs("jane@firm.com", "Jane Doe", "short1!", "short1!")
+    # Short password (< 12 characters)
+    valid, msg = validate_registration_inputs("jane@firm.com", "Jane Doe", "Short1!pass", "Short1!pass")
     assert valid is False
-    assert "8 characters" in msg.lower()
+    assert "12 characters" in msg.lower()
 
-    # Weak password (letters only)
-    valid, msg = validate_registration_inputs("jane@firm.com", "Jane Doe", "passwordonly", "passwordonly")
+    # Missing uppercase
+    valid, msg = validate_registration_inputs("jane@firm.com", "Jane Doe", "lowercaseonly1!", "lowercaseonly1!")
     assert valid is False
-    assert "number or special character" in msg.lower()
+    assert "uppercase" in msg.lower()
+
+    # Missing lowercase
+    valid, msg = validate_registration_inputs("jane@firm.com", "Jane Doe", "UPPERCASEONLY1!", "UPPERCASEONLY1!")
+    assert valid is False
+    assert "lowercase" in msg.lower()
+
+    # Missing number
+    valid, msg = validate_registration_inputs("jane@firm.com", "Jane Doe", "NoNumbersHere!!", "NoNumbersHere!!")
+    assert valid is False
+    assert "number" in msg.lower()
+
+    # Missing special character
+    valid, msg = validate_registration_inputs("jane@firm.com", "Jane Doe", "NoSpecialChar123", "NoSpecialChar123")
+    assert valid is False
+    assert "special character" in msg.lower()
+
+    # Common weak password
+    valid, msg = validate_registration_inputs("jane@firm.com", "Jane Doe", "password123456", "password123456")
+    assert valid is False
+
+    # Password containing user handle
+    valid, msg = validate_registration_inputs("alexmorgan@firm.com", "Alex Morgan", "AlexMorgan2026!", "AlexMorgan2026!")
+    assert valid is False
+    assert "parts of your name or email" in msg.lower()
 
     # Password mismatch
     valid, msg = validate_registration_inputs("jane@firm.com", "Jane Doe", "SecurePass2026!", "DifferentPass2026!")
     assert valid is False
     assert "match" in msg.lower()
+
+
+def test_password_strength_calculation():
+    # Very weak (short)
+    s1 = get_password_strength("weak")
+    assert s1["is_valid"] is False
+    assert s1["score"] <= 1
+
+    # Strong password
+    s2 = get_password_strength("HyperSecurePass#2026!")
+    assert s2["is_valid"] is True
+    assert s2["score"] >= 3
+    assert s2["met_criteria"]["min_length"] is True
+    assert s2["met_criteria"]["uppercase"] is True
+    assert s2["met_criteria"]["lowercase"] is True
+    assert s2["met_criteria"]["digit"] is True
+    assert s2["met_criteria"]["special"] is True
 
 
 def test_register_user_success_and_retrieval(temp_db):
@@ -94,7 +136,7 @@ def test_register_user_success_and_retrieval(temp_db):
     assert user["email"] == test_email
     assert user["name"] == test_name
     assert user["role"] == "analyst"  # Cannot escalate to admin
-    assert user["password_hash"].startswith("pbkdf2_sha256$600000$")
+    assert user["password_hash"].startswith(("$2b$", "$2a$", "pbkdf2_sha256$600000$"))
     assert auth.verify_password(test_pwd, user["password_hash"]) is True
 
 
@@ -188,7 +230,6 @@ def test_supabase_get_user_not_found_returns_none():
 
 def test_supabase_get_user_permission_denied_raises_exception():
     """HTTP 401 or 403 must raise DatabasePermissionError, NEVER returning None (user not found)."""
-    import pytest
     from user_store import DatabasePermissionError, _supabase_get_user
 
     mock_resp = MagicMock()
@@ -201,7 +242,6 @@ def test_supabase_get_user_permission_denied_raises_exception():
 
 def test_supabase_get_user_server_error_raises_storage_error():
     """HTTP 500 server error must raise StorageError, NEVER returning None."""
-    import pytest
     from user_store import StorageError, _supabase_get_user
 
     mock_resp = MagicMock()
@@ -215,7 +255,6 @@ def test_supabase_get_user_server_error_raises_storage_error():
 
 def test_supabase_get_user_timeout_raises_connection_error():
     """Connection timeout must raise DatabaseConnectionError."""
-    import pytest
     import requests
     from user_store import DatabaseConnectionError, _supabase_get_user
 
@@ -226,7 +265,6 @@ def test_supabase_get_user_timeout_raises_connection_error():
 
 def test_supabase_get_user_malformed_json_raises_response_error():
     """Malformed or invalid JSON payload must raise DatabaseResponseError."""
-    import pytest
     from user_store import DatabaseResponseError, _supabase_get_user
 
     mock_resp = MagicMock()
@@ -240,7 +278,6 @@ def test_supabase_get_user_malformed_json_raises_response_error():
 
 def test_supabase_cloud_mode_never_falls_back_to_sqlite():
     """When Supabase is configured, lookup errors must NOT silently fall back to local SQLite."""
-    import pytest
     from user_store import DatabaseConnectionError, get_registered_user
 
     with patch("user_store.get_database_config", return_value=MOCK_SUPABASE_CFG):
@@ -274,7 +311,6 @@ def test_supabase_insert_duplicate_returns_clear_failure():
 
 def test_supabase_insert_permission_denied_raises_exception():
     """HTTP 403 on insert must raise DatabasePermissionError."""
-    import pytest
     from user_store import DatabasePermissionError, _supabase_insert_user
 
     mock_resp = MagicMock()
