@@ -14,12 +14,15 @@ import {
   Cpu,
   Layers,
   Sparkles,
+  Download,
 } from "lucide-react";
+import { ExportModal } from "@/components/ExportModal";
 
 export default function DashboardOverviewPage() {
   const { user } = useAuth();
   const [marketStats, setMarketStats] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isExportOpen, setIsExportOpen] = useState(false);
 
   useEffect(() => {
     api
@@ -87,6 +90,13 @@ export default function DashboardOverviewPage() {
             </p>
           </div>
           <div className="flex items-center space-x-3 shrink-0">
+            <button
+              onClick={() => setIsExportOpen(true)}
+              className="text-xs bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white px-4 py-2.5 rounded-xl font-medium flex items-center space-x-1.5 shadow-md shadow-violet-500/20 transition-all"
+            >
+              <Download className="h-4 w-4" />
+              <span>Export Report</span>
+            </button>
             <Link
               href="/dashboard/workspace"
               className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2.5 rounded-xl border border-slate-700 transition-colors font-medium flex items-center space-x-1.5"
@@ -97,6 +107,11 @@ export default function DashboardOverviewPage() {
           </div>
         </div>
       </div>
+
+      <ExportModal
+        isOpen={isExportOpen}
+        onClose={() => setIsExportOpen(false)}
+      />
 
       {/* KPI Cards Preview */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

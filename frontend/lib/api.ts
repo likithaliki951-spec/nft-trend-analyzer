@@ -103,4 +103,81 @@ export const api = {
   // Admin
   getAdminTelemetry: () => request<any>("/admin/telemetry"),
   getAdminUsers: () => request<any[]>("/admin/users"),
+
+  // Export Reports
+  exportReport: (params: {
+    format: "pdf" | "json" | "docx" | "xlsx";
+    scope?: string;
+    project_id?: string;
+    custom_title?: string;
+    include_charts?: boolean;
+  }) => downloadReportFile(params),
+  downloadBlob: (blob: Blob, filename: string) => triggerBrowserDownload(blob, filename),
 };
+
+export async function downloadReportFile(params: {
+  format: "pdf" | "json" | "docx" | "xlsx";
+  scope?: string;
+  project_id?: string;
+  custom_title?: string;
+  include_charts?: boolean;
+}): Promise<{ blob: Blob; filename: string }> {
+  const token = getAuthToken();
+  const headers = new Headers({
+    "Content-Type": "application/json",
+  });
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/analysis/export`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(params),
+    });
+  } catch (err: any) {
+    throw new Error(
+      "Unable to connect to the export service. Please verify that the backend service is running."
+    );
+  }
+
+  if (!res.ok) {
+    let errorDetail = `Export failed with status ${res.status}`;
+    try {
+      const errJson = await res.json();
+      errorDetail = errJson.detail || errJson.message || errorDetail;
+    } catch {
+      // Use fallback
+    }
+    throw new Error(errorDetail);
+  }
+
+  const disposition = res.headers.get("Content-Disposition");
+  let filename = `NFT_Trend_Analysis_Report.${params.format}`;
+  if (disposition && disposition.includes("filename=")) {
+    const match = disposition.match(/filename="?([^";]+)"?/);
+    if (match && match[1]) {
+      filename = match[1];
+    }
+  }
+
+  const blob = await res.blob();
+  return { blob, filename };
+}
+
+export function triggerBrowserDownload(blob: Blob, filename: string): void {
+  if (typeof window === "undefined") return;
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.style.display = "none";
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  }, 150);
+}

@@ -3,12 +3,14 @@
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
-import { Sparkles, UploadCloud, CheckCircle2, AlertCircle, RefreshCw, Database } from "lucide-react";
+import { Sparkles, UploadCloud, CheckCircle2, AlertCircle, RefreshCw, Database, Download } from "lucide-react";
+import { ExportModal } from "@/components/ExportModal";
 
 export function Navbar({ onDatasetChanged }: { onDatasetChanged?: () => void }) {
   const [loadingDemo, setLoadingDemo] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [activeMeta, setActiveMeta] = useState<any>(null);
+  const [isExportOpen, setIsExportOpen] = useState(false);
 
   const fetchActiveMeta = async () => {
     try {
@@ -81,6 +83,14 @@ export function Navbar({ onDatasetChanged }: { onDatasetChanged?: () => void }) 
           <span>{loadingDemo ? "Loading Demo..." : "Load Demo Dataset"}</span>
         </button>
 
+        <button
+          onClick={() => setIsExportOpen(true)}
+          className="flex items-center space-x-1.5 text-xs bg-slate-800/90 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700/80 transition-colors shadow-sm"
+        >
+          <Download className="h-3.5 w-3.5 text-violet-400" />
+          <span>Export Report</span>
+        </button>
+
         <Link
           href="/dashboard/workspace"
           className="flex items-center space-x-1.5 text-xs bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white px-3.5 py-1.5 rounded-lg font-medium shadow-sm transition-all"
@@ -89,6 +99,13 @@ export function Navbar({ onDatasetChanged }: { onDatasetChanged?: () => void }) 
           <span>Upload Dataset</span>
         </Link>
       </div>
+
+      <ExportModal
+        isOpen={isExportOpen}
+        onClose={() => setIsExportOpen(false)}
+        datasetName={activeMeta?.dataset_name}
+        projectId={activeMeta?.project_id}
+      />
     </header>
   );
 }

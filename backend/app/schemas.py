@@ -156,3 +156,15 @@ class AdminTelemetryResponse(BaseModel):
     server_time: str
     platform_info: str
     python_version: str
+
+
+# ==============================================================================
+# Report Export Schemas
+# ==============================================================================
+
+class ReportExportRequest(BaseModel):
+    format: str = Field("pdf", description="Export format: pdf, json, docx, or xlsx")
+    scope: str = Field("complete", description="Module scope: complete, price_trends, market_activity, social_engagement, marketplace_hub, ml_results, or dataset_summary")
+    project_id: Optional[str] = Field(None, description="Optional ID of saved project to export instead of current active session")
+    custom_title: Optional[str] = Field(None, description="Optional custom title for the report")
+    include_charts: bool = Field(True, description="Whether to generate and embed visual chart figures into supported export formats")

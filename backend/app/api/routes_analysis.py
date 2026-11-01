@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 import pandas as pd
 
 from app.auth import get_current_user
-from app.schemas import MarketOverviewRequest, SocialEngagementRequest, TimeSeriesAnalysisRequest
+from app.schemas import (
+    MarketOverviewRequest,
+    ReportExportRequest,
+    SocialEngagementRequest,
+    TimeSeriesAnalysisRequest,
+)
 from app.services.analysis_service import AnalysisService
+from app.services.report_export_service import ReportExportService
 
 router = APIRouter(prefix="/analysis", tags=["Analytics & Ingestion"])
 
@@ -287,3 +293,119 @@ async def get_social_engagement(
         social_cols=req.social_columns,
     )
     return {"success": True, "social_analysis": res}
+
+
+# ==============================================================================
+# Multi-Format Report Export Endpoints
+# ==============================================================================
+
+@router.post("/export")
+async def export_analysis_report(
+    req: ReportExportRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Response:
+    """Export NFT Trend Analyzer analytical reports in PDF, JSON, DOCX, or XLSX format."""
+    try:
+        file_bytes, filename, mime_type = ReportExportService.export_report(
+            user_email=user["email"],
+            export_format=req.format,
+            scope=req.scope,
+            project_id=req.project_id,
+            custom_title=req.custom_title,
+            include_charts=req.include_charts,
+        )
+        return Response(
+            content=file_bytes,
+            media_type=mime_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Access-Control-Expose-Headers": "Content-Disposition",
+            },
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Report export failed: {exc}",
+        )
+
+
+@router.get("/export")
+async def export_analysis_report_get(
+    format: str = Query("pdf", description="Export format: pdf, json, docx, or xlsx"),
+    scope: str = Query("complete", description="Module scope: complete, price_trends, market_activity, social_engagement, marketplace_hub, ml_results, dataset_summary"),
+    project_id: Optional[str] = Query(None, description="Optional project ID"),
+    custom_title: Optional[str] = Query(None, description="Optional custom title"),
+    include_charts: bool = Query(True, description="Whether to include visual charts"),
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Response:
+    """Download analysis report via GET query parameters for direct browser or client downloads."""
+    try:
+        file_bytes, filename, mime_type = ReportExportService.export_report(
+            user_email=user["email"],
+            export_format=format,
+            scope=scope,
+            project_id=project_id,
+            custom_title=custom_title,
+            include_charts=include_charts,
+        )
+        return Response(
+            content=file_bytes,
+            media_type=mime_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Access-Control-Expose-Headers": "Content-Disposition",
+            },
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Report export failed: {exc}",
+        )
+
+
+@router.post("/export/pdf")
+async def export_pdf_report(
+    req: Optional[ReportExportRequest] = None,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Response:
+    """Dedicated endpoint for PDF report export."""
+    request_data = req or ReportExportRequest(format="pdf")
+    request_data.format = "pdf"
+    return await export_analysis_report(request_data, user=user)
+
+
+@router.post("/export/json")
+async def export_json_report(
+    req: Optional[ReportExportRequest] = None,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Response:
+    """Dedicated endpoint for JSON report export."""
+    request_data = req or ReportExportRequest(format="json")
+    request_data.format = "json"
+    return await export_analysis_report(request_data, user=user)
+
+
+@router.post("/export/docx")
+async def export_docx_report(
+    req: Optional[ReportExportRequest] = None,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Response:
+    """Dedicated endpoint for Microsoft Word (.docx) report export."""
+    request_data = req or ReportExportRequest(format="docx")
+    request_data.format = "docx"
+    return await export_analysis_report(request_data, user=user)
+
+
+@router.post("/export/xlsx")
+async def export_xlsx_report(
+    req: Optional[ReportExportRequest] = None,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> Response:
+    """Dedicated endpoint for Microsoft Excel (.xlsx) report export."""
+    request_data = req or ReportExportRequest(format="xlsx")
+    request_data.format = "xlsx"
+    return await export_analysis_report(request_data, user=user)
