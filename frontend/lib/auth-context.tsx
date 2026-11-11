@@ -9,6 +9,8 @@ export interface User {
   email: string;
   name: string;
   role: string;
+  account_status?: string;
+  email_verified?: boolean;
 }
 
 interface AuthContextType {
@@ -16,8 +18,11 @@ interface AuthContextType {
   token: string | null;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
+  adminLogin: (email: string, password: string) => Promise<void>;
   register: (email: string, name: string, password: string, confirm: string) => Promise<void>;
-  logout: () => void;
+  setSession: (token: string, user: User, redirectPath?: string) => void;
+  logout: (portal?: "user" | "admin") => void;
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -28,40 +33,54 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const router = useRouter();
 
-  useEffect(() => {
+  const refreshUser = async () => {
     const existingToken = getAuthToken();
-    if (existingToken) {
+    if (!existingToken) {
+      setUser(null);
+      setToken(null);
+      setIsLoading(false);
+      return;
+    }
+
+    try {
+      const userData = await api.getMe();
+      setUser(userData);
       setToken(existingToken);
-      api
-        .getMe()
-        .then((userData) => {
-          setUser(userData);
-        })
-        .catch(() => {
-          clearAuthToken();
-          setUser(null);
-          setToken(null);
-        })
-        .finally(() => {
-          setIsLoading(false);
-        });
-    } else {
+    } catch {
+      clearAuthToken();
+      setUser(null);
+      setToken(null);
+    } finally {
       setIsLoading(false);
     }
+  };
+
+  useEffect(() => {
+    refreshUser();
   }, []);
 
   const login = async (email: string, password: string) => {
-    const res = await api.login({ email, password });
+    const res = await api.userLogin({ email, password });
     if (res.access_token && res.user) {
       setAuthToken(res.access_token);
       setToken(res.access_token);
       setUser(res.user);
-      router.push("/dashboard");
+      router.push("/user/dashboard");
+    }
+  };
+
+  const adminLogin = async (email: string, password: string) => {
+    const res = await api.adminLogin({ email, password });
+    if (res.access_token && res.user) {
+      setAuthToken(res.access_token);
+      setToken(res.access_token);
+      setUser(res.user);
+      router.push("/admin/dashboard");
     }
   };
 
   const register = async (email: string, name: string, password: string, confirm: string) => {
-    const res = await api.register({
+    const res = await api.userRegister({
       email,
       name,
       password,
@@ -71,19 +90,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setAuthToken(res.access_token);
       setToken(res.access_token);
       setUser(res.user);
-      router.push("/dashboard");
+      router.push("/user/dashboard");
     }
   };
 
-  const logout = () => {
+  const setSession = (newToken: string, newUser: User, redirectPath?: string) => {
+    setAuthToken(newToken);
+    setToken(newToken);
+    setUser(newUser);
+    if (redirectPath) {
+      router.push(redirectPath);
+    }
+  };
+
+  const logout = (portal: "user" | "admin" = "user") => {
     clearAuthToken();
     setUser(null);
     setToken(null);
-    router.push("/login");
+    if (portal === "admin") {
+      router.push("/admin/login");
+    } else {
+      router.push("/user/login");
+    }
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, isLoading, login, register, logout }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        token,
+        isLoading,
+        login,
+        adminLogin,
+        register,
+        setSession,
+        logout,
+        refreshUser,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

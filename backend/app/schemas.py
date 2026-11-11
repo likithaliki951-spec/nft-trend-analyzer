@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 
 # ==============================================================================
-# Authentication Schemas
+# Authentication & RBAC Schemas
 # ==============================================================================
 
 class UserRegisterRequest(BaseModel):
@@ -20,6 +20,35 @@ class UserRegisterRequest(BaseModel):
 class UserLoginRequest(BaseModel):
     email: str
     password: str
+
+
+class AdminRegisterRequest(BaseModel):
+    email: str
+    name: str = Field(..., min_length=2, max_length=100)
+    password: str = Field(..., min_length=12)
+    password_confirm: str
+
+
+class AdminLoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class AdminSetupInitRequest(BaseModel):
+    setup_token: str
+    email: str
+    name: str = Field(..., min_length=2, max_length=100)
+    password: str = Field(..., min_length=12)
+    password_confirm: str
+
+
+class AdminVerifyEmailRequest(BaseModel):
+    email: str
+    token: str
+
+
+class AdminStatusUpdateRequest(BaseModel):
+    status: str = Field(..., description="active or suspended")
 
 
 class PasswordResetRequest(BaseModel):
@@ -37,13 +66,48 @@ class UserResponse(BaseModel):
     email: str
     name: str
     role: str
+    account_status: str = "active"
+    email_verified: bool = True
     created_at: Optional[str] = None
+    approved_at: Optional[str] = None
+    approved_by: Optional[str] = None
 
 
 class AuthTokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserResponse
+
+
+class AdminApprovalItem(BaseModel):
+    id: str
+    email: str
+    name: str
+    role: str = "admin"
+    account_status: str = "pending"
+    email_verified: bool = False
+    created_at: str
+
+
+class AdminDashboardStatsResponse(BaseModel):
+    total_registered_users: int
+    active_users: int
+    pending_users: int
+    suspended_users: int
+    approved_administrators: int
+    pending_admin_requests: int
+    recent_activity_count: int
+    recent_registrations: List[UserResponse] = []
+
+
+class AdminActivityItem(BaseModel):
+    id: str
+    user_id: Optional[str] = None
+    user_email: Optional[str] = None
+    action: str
+    details: Dict[str, Any] = {}
+    ip_address: Optional[str] = None
+    created_at: str
 
 
 # ==============================================================================

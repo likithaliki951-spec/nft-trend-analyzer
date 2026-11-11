@@ -144,7 +144,7 @@ export function Sidebar() {
             </div>
           </div>
           <button
-            onClick={logout}
+            onClick={() => logout("user")}
             title="Sign Out"
             className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
           >

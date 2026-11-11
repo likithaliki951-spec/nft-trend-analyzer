@@ -61,12 +61,20 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 }
 
 export const api = {
-  // Auth
-  register: (body: any) => request<any>("/auth/register", { method: "POST", body: JSON.stringify(body) }),
-  login: (body: any) => request<any>("/auth/login", { method: "POST", body: JSON.stringify(body) }),
+  // Auth - Regular User Portal
+  register: (body: any) => request<any>("/auth/user/register", { method: "POST", body: JSON.stringify(body) }),
+  login: (body: any) => request<any>("/auth/user/login", { method: "POST", body: JSON.stringify(body) }),
+  userRegister: (body: any) => request<any>("/auth/user/register", { method: "POST", body: JSON.stringify(body) }),
+  userLogin: (body: any) => request<any>("/auth/user/login", { method: "POST", body: JSON.stringify(body) }),
   getMe: () => request<any>("/auth/me"),
   forgotPassword: (email: string) => request<any>("/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) }),
   resetPassword: (body: any) => request<any>("/auth/reset-password", { method: "POST", body: JSON.stringify(body) }),
+
+  // Auth - Admin Portal
+  adminRegister: (body: any) => request<any>("/auth/admin/register", { method: "POST", body: JSON.stringify(body) }),
+  adminVerifyEmail: (body: any) => request<any>("/auth/admin/verify-email", { method: "POST", body: JSON.stringify(body) }),
+  adminLogin: (body: any) => request<any>("/auth/admin/login", { method: "POST", body: JSON.stringify(body) }),
+  adminSetupInit: (body: any) => request<any>("/admin/setup/initialize", { method: "POST", body: JSON.stringify(body) }),
 
   // Datasets & Automated Pipeline
   loadDemoDataset: () => request<any>("/analysis/dataset/demo"),
@@ -100,9 +108,24 @@ export const api = {
   selectActiveProject: (id: string) => request<any>(`/workspace/select-active/${encodeURIComponent(id)}`, { method: "POST" }),
   deleteProject: (id: string) => request<any>(`/workspace/projects/${id}`, { method: "DELETE" }),
 
-  // Admin
+  // Admin Console & RBAC
   getAdminTelemetry: () => request<any>("/admin/telemetry"),
-  getAdminUsers: () => request<any[]>("/admin/users"),
+  getAdminDashboardStats: () => request<any>("/admin/dashboard/stats"),
+  getAdminApprovals: () => request<any[]>("/admin/approvals"),
+  approveAdminRequest: (requestId: string) => request<any>(`/admin/approvals/${requestId}/approve`, { method: "POST" }),
+  rejectAdminRequest: (requestId: string) => request<any>(`/admin/approvals/${requestId}/reject`, { method: "POST" }),
+  getAdminUsers: (params?: { status?: string; role?: string; search?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.status) query.append("status", params.status);
+    if (params?.role) query.append("role", params.role);
+    if (params?.search) query.append("search", params.search);
+    const qs = query.toString();
+    return request<any[]>(`/admin/users${qs ? `?${qs}` : ""}`);
+  },
+  getAdminUser: (userId: string) => request<any>(`/admin/users/${userId}`),
+  updateUserStatus: (userId: string, status: "active" | "suspended") =>
+    request<any>(`/admin/users/${userId}/status`, { method: "PATCH", body: JSON.stringify({ status }) }),
+  getAdminActivity: (limit: number = 50) => request<any[]>(`/admin/activity?limit=${limit}`),
 
   // Export Reports
   exportReport: (params: {

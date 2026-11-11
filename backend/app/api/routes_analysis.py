@@ -7,7 +7,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 import pandas as pd
 
-from app.auth import get_current_user
+from app.auth import get_current_user, log_activity
+from app.config import settings
 from app.schemas import (
     MarketOverviewRequest,
     ReportExportRequest,
@@ -63,13 +64,20 @@ async def pipeline_upload_and_analyze(
             user_email=user["email"],
             project_name=project_name,
         )
+        log_activity(
+            action="dataset_uploaded",
+            user_id=user.get("id"),
+            user_email=user.get("email"),
+            details={"filename": file.filename or "uploaded_dataset.csv", "project_name": project_name},
+        )
         return result
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:
+        detail_msg = f"Analysis pipeline failed: {exc}" if not settings.IS_PRODUCTION else "Analysis pipeline failed during dataset processing. Please verify dataset schema."
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Analysis pipeline failed: {exc}",
+            detail=detail_msg,
         )
 
 
@@ -395,6 +403,12 @@ async def export_analysis_report(
             custom_title=req.custom_title,
             include_charts=req.include_charts,
         )
+        log_activity(
+            action="report_exported",
+            user_id=user.get("id"),
+            user_email=user.get("email"),
+            details={"format": req.format, "scope": req.scope, "filename": filename},
+        )
         return Response(
             content=file_bytes,
             media_type=mime_type,
@@ -408,9 +422,10 @@ async def export_analysis_report(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:
+        detail_msg = f"Report export failed: {exc}" if not settings.IS_PRODUCTION else "Report generation failed. Please verify analytical inputs and try again."
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Report export failed: {exc}",
+            detail=detail_msg,
         )
 
 
@@ -446,9 +461,10 @@ async def export_analysis_report_get(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:
+        detail_msg = f"Report export failed: {exc}" if not settings.IS_PRODUCTION else "Report generation failed. Please verify analytical inputs and try again."
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Report export failed: {exc}",
+            detail=detail_msg,
         )
 
 

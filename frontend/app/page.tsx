@@ -49,15 +49,22 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="flex items-center space-x-4">
+        <div className="flex items-center space-x-3">
           <Link
-            href="/login"
-            className="text-xs text-slate-300 hover:text-white transition-colors font-medium px-3 py-2"
+            href="/admin/login"
+            className="text-xs text-amber-400/90 hover:text-amber-300 font-medium px-3 py-1.5 rounded-lg border border-amber-500/20 bg-amber-500/5 transition-colors hidden sm:inline-flex items-center space-x-1"
           >
-            Sign In
+            <Shield className="h-3 w-3" />
+            <span>Admin Portal</span>
           </Link>
           <Link
-            href="/dashboard"
+            href="/user/login"
+            className="text-xs text-slate-300 hover:text-white transition-colors font-medium px-3 py-2"
+          >
+            User Sign In
+          </Link>
+          <Link
+            href="/user/dashboard"
             className="text-xs bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-medium px-4 py-2 rounded-lg shadow-md shadow-violet-500/20 transition-all flex items-center space-x-1.5"
           >
             <span>Launch Dashboard</span>
@@ -82,17 +89,24 @@ export default function Home() {
 
         <div className="flex flex-wrap gap-4 justify-center mb-16">
           <Link
-            href="/dashboard"
+            href="/user/dashboard"
             className="px-6 py-3 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-semibold text-sm shadow-xl shadow-violet-500/25 transition-all flex items-center space-x-2"
           >
             <span>Open Research Workspace</span>
             <ArrowRight className="h-4 w-4" />
           </Link>
           <Link
-            href="/login"
+            href="/user/login"
             className="px-6 py-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-200 font-semibold text-sm border border-slate-800 transition-colors"
           >
-            Sign In / Register
+            User Sign In / Register
+          </Link>
+          <Link
+            href="/admin/login"
+            className="px-6 py-3 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 font-semibold text-sm border border-amber-500/30 transition-colors flex items-center space-x-2"
+          >
+            <Shield className="h-4 w-4 text-amber-400" />
+            <span>Admin Portal</span>
           </Link>
         </div>
 

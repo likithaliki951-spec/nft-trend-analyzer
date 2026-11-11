@@ -63,6 +63,7 @@ class Settings:
         # Admin Account (SEC-02: Never create default passwords in production)
         self.ADMIN_EMAIL: str = os.getenv("ADMIN_EMAIL", "admin@nfttrends.io").lower()
         self.ADMIN_DEFAULT_PASSWORD: str = os.getenv("ADMIN_DEFAULT_PASSWORD", "")
+        self.ADMIN_SETUP_TOKEN: str = os.getenv("ADMIN_SETUP_TOKEN", "").strip()
 
         # Email Provider Configuration (Free tier: Resend API or SMTP)
         self.EMAIL_PROVIDER_API_KEY: str = (
@@ -75,7 +76,7 @@ class Settings:
         self.SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
 
         self.EMAIL_PROVIDER_CONFIGURED: bool = bool(
-            self.EMAIL_PROVIDER_API_KEY or self.SMTP_HOST or os.getenv("SENDGRID_API_KEY")
+            self.EMAIL_PROVIDER_API_KEY or self.SMTP_HOST
         )
 
         # CORS Settings (SEC-03)
