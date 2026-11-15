@@ -36,7 +36,8 @@ class EmailService:
         clean_email = to_email.strip().lower()
         base_url = (frontend_url or settings.FRONTEND_URL or "http://localhost:3000").rstrip("/")
         encoded_token = urllib.parse.quote(reset_token)
-        reset_link = f"{base_url}/reset-password?token={encoded_token}"
+        encoded_email = urllib.parse.quote(clean_email)
+        reset_link = f"{base_url}/reset-password?token={encoded_token}&email={encoded_email}"
 
         safe_email_html = html.escape(clean_email)
         safe_link_html = html.escape(reset_link)
@@ -95,10 +96,23 @@ class EmailService:
                 if res.status_code in (200, 201):
                     logger.info("Password reset email sent successfully via Resend API to %s", clean_email)
                     return True, "Email dispatched successfully via provider."
-                logger.error("Resend API rejected dispatch (HTTP %d)", res.status_code)
-                return False, f"Email delivery provider returned HTTP {res.status_code}"
+
+                err_detail = ""
+                try:
+                    err_json = res.json()
+                    err_detail = err_json.get("message") or err_json.get("error") or res.text
+                except Exception:
+                    err_detail = res.text[:250] if res.text else "No response body"
+
+                logger.error(
+                    "Resend API rejected password reset dispatch to %s (HTTP %d): %s",
+                    clean_email,
+                    res.status_code,
+                    err_detail,
+                )
+                return False, f"Email delivery provider returned HTTP {res.status_code}: {err_detail}"
             except Exception as exc:
-                logger.error("Network failure contacting Resend API: %s", type(exc).__name__)
+                logger.error("Network failure contacting Resend API for %s: %s", clean_email, type(exc).__name__)
                 return False, f"Email delivery provider network error: {type(exc).__name__}"
 
         # 2. Dispatch via SMTP (if SMTP_HOST configured)
@@ -213,10 +227,23 @@ class EmailService:
                 if res.status_code in (200, 201):
                     logger.info("Admin verification email sent successfully via Resend API to %s", clean_email)
                     return True, "Email dispatched successfully via provider."
-                logger.error("Resend API rejected dispatch (HTTP %d)", res.status_code)
-                return False, f"Email delivery provider returned HTTP {res.status_code}"
+
+                err_detail = ""
+                try:
+                    err_json = res.json()
+                    err_detail = err_json.get("message") or err_json.get("error") or res.text
+                except Exception:
+                    err_detail = res.text[:250] if res.text else "No response body"
+
+                logger.error(
+                    "Resend API rejected admin verification dispatch to %s (HTTP %d): %s",
+                    clean_email,
+                    res.status_code,
+                    err_detail,
+                )
+                return False, f"Email delivery provider returned HTTP {res.status_code}: {err_detail}"
             except Exception as exc:
-                logger.error("Network failure contacting Resend API: %s", type(exc).__name__)
+                logger.error("Network failure contacting Resend API for admin %s: %s", clean_email, type(exc).__name__)
                 return False, f"Email delivery provider network error: {type(exc).__name__}"
 
         # 2. Dispatch via SMTP (if SMTP_HOST configured)

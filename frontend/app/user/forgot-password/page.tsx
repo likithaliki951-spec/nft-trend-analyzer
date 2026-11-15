@@ -99,14 +99,24 @@ export default function UserForgotPasswordPage() {
                 )}
               </button>
 
-              <div className="text-center pt-4">
-                <Link
-                  href="/user/login"
-                  className="inline-flex items-center space-x-1.5 text-xs text-slate-400 hover:text-white transition-colors"
-                >
-                  <ArrowLeft className="h-3 w-3" />
-                  <span>Back to User Sign In</span>
-                </Link>
+              <div className="text-center pt-4 space-y-2">
+                <div>
+                  <Link
+                    href="/reset-password"
+                    className="text-xs text-violet-400 hover:text-violet-300 transition-colors"
+                  >
+                    Already have a reset token? Enter it here &rarr;
+                  </Link>
+                </div>
+                <div>
+                  <Link
+                    href="/user/login"
+                    className="inline-flex items-center space-x-1.5 text-xs text-slate-400 hover:text-white transition-colors"
+                  >
+                    <ArrowLeft className="h-3 w-3" />
+                    <span>Back to User Sign In</span>
+                  </Link>
+                </div>
               </div>
             </form>
           )}

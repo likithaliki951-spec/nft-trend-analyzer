@@ -992,6 +992,7 @@ def update_user_password(email: str, new_hash: str) -> bool:
             "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
             "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
             "Content-Type": "application/json",
+            "Prefer": "return=representation",
         }
         try:
             res = requests.patch(
@@ -1001,7 +1002,23 @@ def update_user_password(email: str, new_hash: str) -> bool:
                 json={"password_hash": new_hash, "updated_at": now_iso},
                 timeout=4.0,
             )
-            return res.status_code in (200, 204)
+            if res.status_code == 200:
+                rows = res.json()
+                if isinstance(rows, list) and len(rows) > 0:
+                    return True
+            # Case-insensitive retry if 0 rows matched exact lowercase
+            res_ilike = requests.patch(
+                url,
+                headers=headers,
+                params={"email": f"ilike.{clean_email}"},
+                json={"password_hash": new_hash, "updated_at": now_iso},
+                timeout=4.0,
+            )
+            if res_ilike.status_code == 200:
+                rows_ilike = res_ilike.json()
+                if isinstance(rows_ilike, list) and len(rows_ilike) > 0:
+                    return True
+            return False
         except Exception:
             return False
 
@@ -1012,6 +1029,7 @@ def update_user_password(email: str, new_hash: str) -> bool:
                 "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
                 "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
                 "Content-Type": "application/json",
+                "Prefer": "return=representation",
             }
             res = requests.patch(
                 url,
@@ -1020,8 +1038,21 @@ def update_user_password(email: str, new_hash: str) -> bool:
                 json={"password_hash": new_hash, "updated_at": now_iso},
                 timeout=4.0,
             )
-            if res.status_code in (200, 204):
-                return True
+            if res.status_code == 200:
+                rows = res.json()
+                if isinstance(rows, list) and len(rows) > 0:
+                    return True
+            res_ilike = requests.patch(
+                url,
+                headers=headers,
+                params={"email": f"ilike.{clean_email}"},
+                json={"password_hash": new_hash, "updated_at": now_iso},
+                timeout=4.0,
+            )
+            if res_ilike.status_code == 200:
+                rows_ilike = res_ilike.json()
+                if isinstance(rows_ilike, list) and len(rows_ilike) > 0:
+                    return True
         except Exception:
             pass
 
@@ -1588,6 +1619,18 @@ def create_password_reset_token(email: str, expires_delta: Optional[datetime.tim
             "Content-Type": "application/json",
             "Prefer": "return=minimal",
         }
+        # Invalidate any prior active unconsumed reset tokens for this email address
+        try:
+            requests.patch(
+                url,
+                headers=headers,
+                params={"user_email": f"eq.{clean_email}", "used_at": "is.null"},
+                json={"used_at": now_iso},
+                timeout=4.0,
+            )
+        except Exception:
+            pass
+
         payload_db = {
             "jti": jti,
             "user_email": clean_email,
@@ -1615,6 +1658,17 @@ def create_password_reset_token(email: str, expires_delta: Optional[datetime.tim
                 "Content-Type": "application/json",
                 "Prefer": "return=minimal",
             }
+            try:
+                requests.patch(
+                    url,
+                    headers=headers,
+                    params={"user_email": f"eq.{clean_email}", "used_at": "is.null"},
+                    json={"used_at": now_iso},
+                    timeout=4.0,
+                )
+            except Exception:
+                pass
+
             payload_db = {
                 "jti": jti,
                 "user_email": clean_email,
@@ -1631,6 +1685,11 @@ def create_password_reset_token(email: str, expires_delta: Optional[datetime.tim
     conn = sqlite3.connect(settings.SQLITE_PATH)
     try:
         with conn:
+            # Invalidate any prior unconsumed tokens for this user in SQLite
+            conn.execute(
+                "UPDATE password_reset_tokens SET used_at = ? WHERE LOWER(user_email) = ? AND used_at IS NULL",
+                (now_iso, clean_email),
+            )
             conn.execute(
                 """
                 INSERT OR REPLACE INTO password_reset_tokens (jti, user_email, token_hash, used_at, expires_at, created_at)

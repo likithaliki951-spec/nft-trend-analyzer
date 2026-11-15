@@ -24,3 +24,7 @@ services:
         sync: false
       - key: ALLOWED_ORIGINS
         sync: false
+      - key: EMAIL_PROVIDER_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false

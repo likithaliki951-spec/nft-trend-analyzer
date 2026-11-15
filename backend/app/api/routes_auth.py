@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import datetime
+import logging
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+
+logger = logging.getLogger("nft_trend_analyzer.auth")
 
 from app.auth import (
     check_rate_limit,
@@ -505,14 +508,29 @@ async def forgot_password(req: PasswordResetRequest) -> Dict[str, Any]:
     clean_email = req.email.strip().lower()
     user = get_user_by_email(clean_email)
 
-    if user and settings.EMAIL_PROVIDER_CONFIGURED:
-        token = create_password_reset_token(clean_email)
-        if token:
-            try:
-                from app.services.email_service import EmailService
-                EmailService.send_password_reset_email(clean_email, token)
-            except Exception:
-                pass
+    if user:
+        if not settings.EMAIL_PROVIDER_CONFIGURED:
+            logger.warning(
+                "Password reset requested for %s, but no email provider is configured. "
+                "Configure EMAIL_PROVIDER_API_KEY (or RESEND_API_KEY) and EMAIL_FROM.",
+                clean_email,
+            )
+        else:
+            token = create_password_reset_token(clean_email)
+            if token:
+                try:
+                    from app.services.email_service import EmailService
+                    ok, msg = EmailService.send_password_reset_email(clean_email, token)
+                    if not ok:
+                        logger.error("Password reset email dispatch failed for %s: %s", clean_email, msg)
+                    else:
+                        logger.info("Password reset email dispatched successfully for %s", clean_email)
+                except Exception as exc:
+                    logger.error("Unexpected error dispatching reset email to %s: %s", clean_email, type(exc).__name__)
+            else:
+                logger.error("Failed to generate password reset token for %s", clean_email)
+    else:
+        logger.info("Password reset requested for non-existent email (silently ignoring)")
 
     return {
         "success": True,
@@ -545,7 +563,13 @@ async def reset_password(req: PasswordResetConfirmRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=policy_msg)
 
     new_hash = hash_password(req.new_password)
-    update_user_password(email, new_hash)
+    updated = update_user_password(email, new_hash)
+    if not updated:
+        logger.error("Failed to update password in database for %s during password reset", email)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update password. Please request a new reset link and try again.",
+        )
 
     log_activity(
         action="password_reset_completed",
