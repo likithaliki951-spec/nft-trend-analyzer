@@ -110,6 +110,10 @@ class EmailService:
                     res.status_code,
                     err_detail,
                 )
+                if res.status_code == 403:
+                    lower_err = err_detail.lower()
+                    if any(kw in lower_err for kw in ("testing", "verify", "domain", "sandbox", "own email", "restriction")):
+                        logger.error("Resend sandbox or unverified domain: verify a domain in Resend and set EMAIL_FROM")
                 return False, f"Email delivery provider returned HTTP {res.status_code}: {err_detail}"
             except Exception as exc:
                 logger.error("Network failure contacting Resend API for %s: %s", clean_email, type(exc).__name__)
@@ -241,6 +245,10 @@ class EmailService:
                     res.status_code,
                     err_detail,
                 )
+                if res.status_code == 403:
+                    lower_err = err_detail.lower()
+                    if any(kw in lower_err for kw in ("testing", "verify", "domain", "sandbox", "own email", "restriction")):
+                        logger.error("Resend sandbox or unverified domain: verify a domain in Resend and set EMAIL_FROM")
                 return False, f"Email delivery provider returned HTTP {res.status_code}: {err_detail}"
             except Exception as exc:
                 logger.error("Network failure contacting Resend API for admin %s: %s", clean_email, type(exc).__name__)

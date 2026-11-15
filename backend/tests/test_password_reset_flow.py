@@ -331,3 +331,51 @@ def test_password_reset_zero_rows_patch_returns_500_and_no_success(test_user):
         assert data.get("success") is not True
         assert "Failed to update password" in data.get("detail", "")
 
+
+def test_admin_register_resend_sandbox_403_logs_clear_guidance(caplog):
+    """Admin registration encountering Resend 403 logs actionable guidance and returns generic message in production."""
+    email = f"admin_applicant_{uuid.uuid4().hex[:6]}@gmail.com"
+    resend_error_body = {
+        "statusCode": 403,
+        "name": "validation_error",
+        "message": "You can only send testing emails to your own email address (owner@example.com).",
+    }
+
+    def mock_requests_post(url, *args, **kwargs):
+        mock_res = MagicMock()
+        mock_res.status_code = 403
+        mock_res.json.return_value = resend_error_body
+        mock_res.text = json.dumps(resend_error_body)
+        return mock_res
+
+    original_key = settings.EMAIL_PROVIDER_API_KEY
+    original_cfg = settings.EMAIL_PROVIDER_CONFIGURED
+
+    settings.EMAIL_PROVIDER_API_KEY = "re_test_fake_key_123"
+    settings.EMAIL_PROVIDER_CONFIGURED = True
+
+    try:
+        with caplog.at_level(logging.ERROR):
+            with patch("requests.post", side_effect=mock_requests_post):
+                res = client.post(
+                    "/api/v1/auth/admin/register",
+                    json={
+                        "email": email,
+                        "name": "New Admin Applicant",
+                        "password": "Master#2026!TitaniumShield",
+                        "password_confirm": "Master#2026!TitaniumShield",
+                    },
+                )
+                assert res.status_code == 502
+                assert "failed to dispatch" in res.json()["detail"].lower()
+
+                # Verify actionable Render log guidance without exposing secrets
+                assert any(
+                    "Resend sandbox or unverified domain: verify a domain in Resend and set EMAIL_FROM" in record.message
+                    for record in caplog.records
+                )
+    finally:
+        settings.EMAIL_PROVIDER_API_KEY = original_key
+        settings.EMAIL_PROVIDER_CONFIGURED = original_cfg
+
+
