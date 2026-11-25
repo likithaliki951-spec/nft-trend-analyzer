@@ -70,7 +70,7 @@ export default function SocialEngagementPage() {
           setActiveMeta(metaRes);
         }
 
-        if (bundleRes) {
+        if (bundleRes && bundleRes.has_active_dataset !== false) {
           setSocialData(bundleRes);
           usedPrecomputed = true;
         }

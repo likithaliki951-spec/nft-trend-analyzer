@@ -130,15 +130,6 @@ export default function PriceTrendsPage() {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-4">
-        <RefreshCw className="h-8 w-8 animate-spin text-violet-400" />
-        <p className="text-sm text-slate-400">Loading chronological pricing & ML diagnostics...</p>
-      </div>
-    );
-  }
-
   // Format scree plot data for PCA
   const screeData = pcaResult?.cumulative_variance_ratio?.map((ratio: number, idx: number) => ({
     component: `PC${idx + 1}`,
@@ -177,6 +168,15 @@ export default function PriceTrendsPage() {
   }, [modelsResult]);
 
   const modelErrors = modelsResult?.model_errors || {};
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-4">
+        <RefreshCw className="h-8 w-8 animate-spin text-violet-400" />
+        <p className="text-sm text-slate-400">Loading chronological pricing & ML diagnostics...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">

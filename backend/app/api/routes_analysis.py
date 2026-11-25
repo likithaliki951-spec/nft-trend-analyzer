@@ -135,16 +135,54 @@ async def get_active_module_results(
     """Retrieve precomputed analytical results for a specific dashboard module."""
     from app.services.pipeline_service import PipelineService
 
+    normalized_module = module_name.lower().replace("-", "_")
+
+    valid_modules = (
+        "price_trends",
+        "price_trends_prediction",
+        "market_activity",
+        "market_activity_tiers",
+        "social_engagement",
+        "social_sentiment",
+        "marketplace_hub",
+        "marketplace",
+    )
+    if normalized_module not in valid_modules:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Unknown module '{module_name}'. Valid modules: price-trends, market-activity, social-engagement, marketplace-hub.",
+        )
+
     session = PipelineService.get_active_session(user["email"])
+    if not session or not session.get("bundle"):
+        return {
+            "success": True,
+            "has_active_dataset": False,
+            "available": False,
+            "module": normalized_module,
+            "dataset_name": None,
+            "message": "No active dataset loaded. Please upload a dataset in Workspace.",
+            "features_detected": {},
+            "data": [],
+            "time_series": [],
+            "stats": None,
+            "ml_models": None,
+            "pca_diagnostics": None,
+            "kpis": None,
+            "valuation_tiers": None,
+            "correlations": [],
+            "scatter_samples": [],
+            "detected_columns": [],
+        }
+
     bundle = session.get("bundle") or {}
     dataset_name = session.get("dataset_name", "Active Dataset")
-
-    normalized_module = module_name.lower().replace("-", "_")
 
     if normalized_module in ("price_trends", "price_trends_prediction"):
         mod_data = bundle.get("price_trends") or {}
         return {
             "success": True,
+            "has_active_dataset": True,
             "dataset_name": dataset_name,
             "features_detected": bundle.get("features_detected", {}),
             **mod_data,
@@ -154,6 +192,7 @@ async def get_active_module_results(
         mod_data = bundle.get("market_activity") or {}
         return {
             "success": True,
+            "has_active_dataset": True,
             "dataset_name": dataset_name,
             "features_detected": bundle.get("features_detected", {}),
             **mod_data,
@@ -163,6 +202,7 @@ async def get_active_module_results(
         mod_data = bundle.get("social_engagement") or {}
         return {
             "success": True,
+            "has_active_dataset": True,
             "dataset_name": dataset_name,
             "features_detected": bundle.get("features_detected", {}),
             **mod_data,
@@ -172,6 +212,7 @@ async def get_active_module_results(
         mod_data = bundle.get("marketplace_hub") or {}
         return {
             "success": True,
+            "has_active_dataset": True,
             "dataset_name": dataset_name,
             **mod_data,
         }

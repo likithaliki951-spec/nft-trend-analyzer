@@ -148,3 +148,100 @@ def test_issue_3_opensea_collection_stats_updating():
         assert s["implied_market_cap_eth"] == pytest.approx(expected_eth_cap, rel=1e-2)
         expected_usd_cap = round(expected_eth_cap * eth_rate, 2)
         assert s["implied_market_cap_usd"] == pytest.approx(expected_usd_cap, rel=1e-2)
+
+
+def test_regression_active_results_endpoints_no_active_session():
+    """Verify that the 3 previously failing endpoints return graceful 200 payloads when no dataset is active.
+
+    Fixes AttributeError: 'NoneType' object has no attribute 'get' that caused HTTP 500 on:
+    - GET /api/v1/analysis/active-results/price-trends
+    - GET /api/v1/analysis/active-results/market-activity
+    - GET /api/v1/analysis/active-results/social-engagement
+    """
+    import uuid
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    client = TestClient(app)
+    fresh_email = f"fresh_user_{uuid.uuid4().hex[:6]}@nfttrends.io"
+    fresh_pass = "SecurePassVault#2026!"
+
+    # Register & Login fresh user
+    reg_res = client.post(
+        "/api/v1/auth/register",
+        json={"email": fresh_email, "name": "Fresh Analyst", "password": fresh_pass, "password_confirm": fresh_pass},
+    )
+    assert reg_res.status_code == 200
+
+    login_res = client.post(
+        "/api/v1/auth/login",
+        json={"email": fresh_email, "password": fresh_pass},
+    )
+    assert login_res.status_code == 200
+    token = login_res.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    endpoints = [
+        "/api/v1/analysis/active-results/price-trends",
+        "/api/v1/analysis/active-results/market-activity",
+        "/api/v1/analysis/active-results/social-engagement",
+    ]
+
+    for ep in endpoints:
+        res = client.get(ep, headers=headers)
+        assert res.status_code == 200, f"Endpoint {ep} failed with status {res.status_code}: {res.text}"
+        body = res.json()
+        assert body.get("success") is True, f"Endpoint {ep} returned success=False"
+        assert body.get("has_active_dataset") is False, f"Endpoint {ep} should report has_active_dataset=False"
+        assert body.get("available") is False, f"Endpoint {ep} should report available=False"
+
+
+def test_regression_active_results_endpoints_with_active_session():
+    """Verify that when an active dataset session exists, all 3 endpoints return populated data with HTTP 200."""
+    import io
+    import uuid
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    client = TestClient(app)
+    user_email = f"active_user_{uuid.uuid4().hex[:6]}@nfttrends.io"
+    user_pass = "SuperSecretPass#2026!"
+
+    # Register & Login
+    reg_res = client.post(
+        "/api/v1/auth/register",
+        json={"email": user_email, "name": "Dataset Analyst", "password": user_pass, "password_confirm": user_pass},
+    )
+    assert reg_res.status_code == 200, f"Registration failed: {reg_res.text}"
+    token = reg_res.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Upload and analyze demo CSV dataset to establish active session
+    demo_df = AnalysisService.get_demo_dataset(100)
+    csv_bytes = demo_df.to_csv(index=False).encode("utf-8")
+    upload_res = client.post(
+        "/api/v1/analysis/pipeline/upload-and-analyze",
+        headers=headers,
+        files={"file": ("nft_benchmark.csv", io.BytesIO(csv_bytes), "text/csv")},
+        data={"project_name": "Test Benchmark Session"},
+    )
+    assert upload_res.status_code == 200, f"Upload pipeline failed: {upload_res.text}"
+
+    # Now verify all three active-results endpoints return 200 with populated data
+    res_pt = client.get("/api/v1/analysis/active-results/price-trends", headers=headers)
+    assert res_pt.status_code == 200
+    body_pt = res_pt.json()
+    assert body_pt.get("has_active_dataset") is True
+    assert "data" in body_pt or "time_series" in body_pt
+
+    res_ma = client.get("/api/v1/analysis/active-results/market-activity", headers=headers)
+    assert res_ma.status_code == 200
+    body_ma = res_ma.json()
+    assert body_ma.get("has_active_dataset") is True
+    assert "kpis" in body_ma
+
+    res_se = client.get("/api/v1/analysis/active-results/social-engagement", headers=headers)
+    assert res_se.status_code == 200
+    body_se = res_se.json()
+    assert body_se.get("has_active_dataset") is True
+    assert "correlations" in body_se
