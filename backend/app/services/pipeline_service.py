@@ -353,6 +353,7 @@ class PipelineService:
                         price_trends_result["best_model"] = ml_res.get("best_model", "Random Forest")
                         price_trends_result["test_predictions"] = ml_res.get("actual_vs_predicted_sample", [])
                         price_trends_result["evaluation_metrics"] = eval_metrics
+                        price_trends_result["model_errors"] = ml_res.get("model_errors", {})
                         if ml_res.get("pca_diagnostics"):
                             price_trends_result["pca_diagnostics"] = ml_res["pca_diagnostics"]
                         module_statuses["price_trends"] = "completed"

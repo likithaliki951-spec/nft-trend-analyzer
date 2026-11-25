@@ -101,6 +101,7 @@ class AnalysisService:
                 avg_price=(p_col, "mean"),
             ).reset_index()
             grouped = grouped.sort_values(by="total_volume", ascending=False).head(10)
+            grouped["collection"] = grouped[c_col].astype(str)
             collection_breakdown = grouped.to_dict(orient="records")
 
         start_date = str(df[d_col].min())[:10] if d_col and d_col in df.columns else "N/A"
@@ -169,10 +170,28 @@ class AnalysisService:
         # Add 7-day rolling average
         resampled["price_7d_ma"] = resampled["price_avg"].rolling(7, min_periods=1).mean()
 
+        # Provide standard aliases expected by frontend charts
+        resampled["price"] = resampled["price_avg"]
+        resampled["price_ma7"] = resampled["price_7d_ma"]
+        resampled["sales_count"] = resampled["total_sales"]
+
         # Fill NaNs
         resampled = resampled.fillna(0.0)
         resampled["date"] = resampled["_dt"].dt.strftime("%Y-%m-%d")
-        return resampled[["date", "price_avg", "price_max", "price_min", "total_sales", "total_volume", "price_7d_ma"]].to_dict(orient="records")
+        return resampled[
+            [
+                "date",
+                "price",
+                "price_avg",
+                "price_max",
+                "price_min",
+                "price_ma7",
+                "price_7d_ma",
+                "sales_count",
+                "total_sales",
+                "total_volume",
+            ]
+        ].to_dict(orient="records")
 
     @staticmethod
     def get_social_engagement_data(

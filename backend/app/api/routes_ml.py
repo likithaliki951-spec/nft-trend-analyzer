@@ -27,6 +27,7 @@ async def train_predictive_models(
             target_col=req.target_column,
             use_pca=req.use_pca,
             target_pca_components=req.target_pca_components,
+            test_size=float(req.test_size or 0.2),
         )
         eval_metrics = {
             m["model_name"]: {
@@ -44,6 +45,7 @@ async def train_predictive_models(
             "pca_diagnostics": results.get("pca_diagnostics"),
             "test_predictions": results.get("actual_vs_predicted_sample"),
             "evaluation_metrics": eval_metrics,
+            "model_errors": results.get("model_errors", {}),
         }
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))

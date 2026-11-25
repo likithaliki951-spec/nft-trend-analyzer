@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import {
   ResponsiveContainer,
+  ComposedChart,
   LineChart,
   Line,
   XAxis,
@@ -148,6 +149,35 @@ export default function PriceTrendsPage() {
     ),
   })) || [];
 
+  // Normalize time-series data ensuring valid numeric fields for charts
+  const normalizedTimeSeries = React.useMemo(() => {
+    if (!timeSeriesData || !Array.isArray(timeSeriesData) || timeSeriesData.length === 0) {
+      return [];
+    }
+    return timeSeriesData.map((d: any) => ({
+      ...d,
+      date: d.date || "N/A",
+      price: Number(d.price ?? d.price_avg ?? 0),
+      price_ma7: Number(d.price_ma7 ?? d.price_7d_ma ?? d.price ?? d.price_avg ?? 0),
+      sales_count: Number(d.sales_count ?? d.total_sales ?? d.total_volume ?? 0),
+    }));
+  }, [timeSeriesData]);
+
+  // Normalize test set predictions ensuring all 4 series (actual, RF, GB, Ridge) are strictly numeric
+  const testPredictions = React.useMemo(() => {
+    const raw = modelsResult?.test_predictions || [];
+    if (!Array.isArray(raw) || raw.length === 0) return [];
+    return raw.map((pt: any) => ({
+      index: pt.index,
+      actual: pt.actual != null && !isNaN(Number(pt.actual)) ? Number(pt.actual) : undefined,
+      "Random Forest": pt["Random Forest"] != null && !isNaN(Number(pt["Random Forest"])) ? Number(pt["Random Forest"]) : undefined,
+      "Gradient Boosting": pt["Gradient Boosting"] != null && !isNaN(Number(pt["Gradient Boosting"])) ? Number(pt["Gradient Boosting"]) : undefined,
+      "Ridge Regression": pt["Ridge Regression"] != null && !isNaN(Number(pt["Ridge Regression"])) ? Number(pt["Ridge Regression"]) : undefined,
+    }));
+  }, [modelsResult]);
+
+  const modelErrors = modelsResult?.model_errors || {};
+
   return (
     <div className="max-w-6xl mx-auto space-y-6">
       {/* Header */}
@@ -271,26 +301,38 @@ export default function PriceTrendsPage() {
                 <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-sky-400"></span>7D Moving Average</span>
               </div>
             </div>
-            <div className="h-80 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={timeSeriesData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="priceGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.4}/>
-                      <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0.0}/>
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                  <XAxis dataKey="date" stroke="#64748b" tick={{ fontSize: 11 }} />
-                  <YAxis stroke="#64748b" tick={{ fontSize: 11 }} />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: "#0b0f19", borderColor: "#334155", borderRadius: "8px", fontSize: "12px" }}
-                  />
-                  <Area type="monotone" dataKey="price" stroke="#8b5cf6" strokeWidth={2} fillOpacity={1} fill="url(#priceGradient)" name="Daily Price (ETH)" />
-                  <Line type="monotone" dataKey="price_ma7" stroke="#38bdf8" strokeWidth={2} dot={false} name="7D MA" />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
+            {normalizedTimeSeries.length > 0 ? (
+              <div className="h-80 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart data={normalizedTimeSeries} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="priceGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.4}/>
+                        <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0.0}/>
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                    <XAxis dataKey="date" stroke="#64748b" tick={{ fontSize: 11 }} />
+                    <YAxis stroke="#64748b" tick={{ fontSize: 11 }} />
+                    <Tooltip
+                      contentStyle={{ backgroundColor: "#0b0f19", borderColor: "#334155", borderRadius: "8px", fontSize: "12px" }}
+                      formatter={(val: any, name: string) => [
+                        typeof val === "number" ? `${Number(val).toFixed(3)} ETH` : val,
+                        name
+                      ]}
+                    />
+                    <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "10px" }} />
+                    <Area type="monotone" dataKey="price" stroke="#8b5cf6" strokeWidth={2} fillOpacity={1} fill="url(#priceGradient)" name="Daily Price (ETH)" />
+                    <Line type="monotone" dataKey="price_ma7" stroke="#38bdf8" strokeWidth={2} dot={false} name="7D Moving Average" />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <div className="h-72 w-full flex flex-col items-center justify-center text-slate-400 text-xs bg-slate-900/30 rounded-xl border border-slate-800/60">
+                <p className="font-medium text-slate-300">Insufficient data to display this chart</p>
+                <p className="text-[11px] text-slate-500 mt-1">Please ensure the active dataset contains valid chronological date and price fields.</p>
+              </div>
+            )}
           </div>
 
           {/* Daily Sales Volume Chart */}
@@ -299,19 +341,26 @@ export default function PriceTrendsPage() {
               <h3 className="text-sm font-semibold text-white">Trading Volume & Liquidity Pulse</h3>
               <p className="text-xs text-slate-400">Transaction counts aggregated per daily interval</p>
             </div>
-            <div className="h-64 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={timeSeriesData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                  <XAxis dataKey="date" stroke="#64748b" tick={{ fontSize: 11 }} />
-                  <YAxis stroke="#64748b" tick={{ fontSize: 11 }} />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: "#0b0f19", borderColor: "#334155", borderRadius: "8px", fontSize: "12px" }}
-                  />
-                  <Bar dataKey="sales_count" fill="#6366f1" radius={[4, 4, 0, 0]} name="Transactions" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+            {normalizedTimeSeries.length > 0 ? (
+              <div className="h-64 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={normalizedTimeSeries} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                    <XAxis dataKey="date" stroke="#64748b" tick={{ fontSize: 11 }} />
+                    <YAxis stroke="#64748b" tick={{ fontSize: 11 }} />
+                    <Tooltip
+                      contentStyle={{ backgroundColor: "#0b0f19", borderColor: "#334155", borderRadius: "8px", fontSize: "12px" }}
+                      formatter={(val: any) => [`${Number(val).toLocaleString()} txs`, "Transactions"]}
+                    />
+                    <Bar dataKey="sales_count" fill="#6366f1" radius={[4, 4, 0, 0]} name="Transactions" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <div className="h-56 w-full flex flex-col items-center justify-center text-slate-400 text-xs bg-slate-900/30 rounded-xl border border-slate-800/60">
+                <p className="font-medium text-slate-300">Insufficient data to display this chart</p>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -361,13 +410,25 @@ export default function PriceTrendsPage() {
             </div>
           </div>
 
+          {/* Model-specific errors if any model failed */}
+          {Object.keys(modelErrors).length > 0 && (
+            <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs space-y-1">
+              <p className="font-semibold text-white">Model Training Notifications:</p>
+              {Object.entries(modelErrors).map(([mName, mErr]) => (
+                <p key={mName} className="font-mono text-[11px]">
+                  <strong>{mName}:</strong> {String(mErr)}
+                </p>
+              ))}
+            </div>
+          )}
+
           {/* Actual vs Predicted Visual Chart */}
           <div className="p-5 rounded-2xl bg-[#0d1322] border border-slate-800">
             <div className="flex items-center justify-between mb-4">
               <div>
                 <h3 className="text-sm font-semibold text-white">Out-of-Sample Test Set: Actual vs Predicted Prices</h3>
                 <p className="text-xs text-slate-400">
-                  Benchmarking Random Forest vs Gradient Boosting vs Linear Ridge against Ground Truth
+                  Benchmarking Random Forest vs Gradient Boosting vs Ridge Regression against Ground Truth
                 </p>
               </div>
               <div className="text-xs px-2.5 py-1 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
@@ -375,26 +436,38 @@ export default function PriceTrendsPage() {
               </div>
             </div>
 
-            <div className="h-80 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart
-                  data={modelsResult?.test_predictions || []}
-                  margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                  <XAxis dataKey="index" stroke="#64748b" tick={{ fontSize: 11 }} label={{ value: "Test Sample Index", position: "insideBottom", offset: -5, fill: "#64748b", fontSize: 10 }} />
-                  <YAxis stroke="#64748b" tick={{ fontSize: 11 }} />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: "#0b0f19", borderColor: "#334155", borderRadius: "8px", fontSize: "12px" }}
-                  />
-                  <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "10px" }} />
-                  <Line type="monotone" dataKey="actual" stroke="#ffffff" strokeWidth={2.5} name="Actual Ground Truth" dot={{ r: 3 }} />
-                  <Line type="monotone" dataKey="Random Forest" stroke="#8b5cf6" strokeWidth={2} name="Random Forest" dot={false} strokeDasharray="4 2" />
-                  <Line type="monotone" dataKey="Gradient Boosting" stroke="#38bdf8" strokeWidth={2} name="Gradient Boosting" dot={false} />
-                  <Line type="monotone" dataKey="Ridge Regression" stroke="#f59e0b" strokeWidth={1.5} name="Ridge Regressor" dot={false} strokeDasharray="2 2" />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
+            {testPredictions.length > 0 ? (
+              <div className="h-80 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart
+                    data={testPredictions}
+                    margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                    <XAxis dataKey="index" stroke="#64748b" tick={{ fontSize: 11 }} label={{ value: "Test Sample Index", position: "insideBottom", offset: -5, fill: "#64748b", fontSize: 10 }} />
+                    <YAxis stroke="#64748b" tick={{ fontSize: 11 }} />
+                    <Tooltip
+                      contentStyle={{ backgroundColor: "#0b0f19", borderColor: "#334155", borderRadius: "8px", fontSize: "12px" }}
+                      formatter={(val: any, name: string) => [
+                        typeof val === "number" ? `${Number(val).toFixed(4)} ETH` : val,
+                        name
+                      ]}
+                      labelFormatter={(label) => `Test Sample #${label}`}
+                    />
+                    <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "10px" }} />
+                    <Line type="monotone" dataKey="actual" stroke="#ffffff" strokeWidth={2.5} name="Actual Ground Truth" dot={{ r: 3 }} />
+                    <Line type="monotone" dataKey="Random Forest" stroke="#8b5cf6" strokeWidth={2} name="Random Forest" dot={false} strokeDasharray="4 2" />
+                    <Line type="monotone" dataKey="Gradient Boosting" stroke="#38bdf8" strokeWidth={2} name="Gradient Boosting" dot={false} />
+                    <Line type="monotone" dataKey="Ridge Regression" stroke="#f59e0b" strokeWidth={1.5} name="Ridge Regression" dot={false} strokeDasharray="2 2" />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <div className="h-72 w-full flex flex-col items-center justify-center text-slate-400 text-xs bg-slate-900/30 rounded-xl border border-slate-800/60">
+                <p className="font-medium text-slate-300">Insufficient data to display this chart</p>
+                <p className="text-[11px] text-slate-500 mt-1">Click &quot;Train Regression Ensemble&quot; to compute out-of-sample predictions.</p>
+              </div>
+            )}
           </div>
         </div>
       )}

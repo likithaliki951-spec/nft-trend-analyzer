@@ -126,6 +126,7 @@ class MLTrainRequest(BaseModel):
     target_column: Optional[str] = None
     use_pca: bool = False
     target_pca_components: int = 60
+    test_size: Optional[float] = 0.2
 
 
 class PCADiagnosticsResponse(BaseModel):

@@ -225,7 +225,7 @@ export default function MarketActivityPage() {
       </div>
 
       {/* Collection Breakdown Chart */}
-      {kpis?.collection_breakdown && kpis.collection_breakdown.length > 0 && (
+      {kpis?.collection_breakdown && kpis.collection_breakdown.length > 0 ? (
         <div className="p-5 rounded-2xl bg-[#0d1322] border border-slate-800">
           <div className="mb-4">
             <h3 className="text-sm font-semibold text-white">Top Collections by Traded Volume</h3>
@@ -233,16 +233,32 @@ export default function MarketActivityPage() {
           </div>
           <div className="h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={kpis.collection_breakdown} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+              <BarChart
+                data={kpis.collection_breakdown.map((item: any) => ({
+                  ...item,
+                  collection: item.collection || item.Collection_Name || item.Collection || "Unknown",
+                  total_volume: Number(item.total_volume || 0),
+                }))}
+                margin={{ top: 10, right: 10, left: -10, bottom: 0 }}
+              >
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
                 <XAxis dataKey="collection" stroke="#64748b" tick={{ fontSize: 11 }} />
                 <YAxis stroke="#64748b" tick={{ fontSize: 11 }} />
                 <Tooltip
                   contentStyle={{ backgroundColor: "#0b0f19", borderColor: "#334155", borderRadius: "8px", fontSize: "12px" }}
+                  formatter={(val: any) => [`${Number(val).toFixed(2)} ETH`, "Volume"]}
                 />
                 <Bar dataKey="total_volume" fill="#38bdf8" radius={[4, 4, 0, 0]} name="Total Volume (ETH)" />
               </BarChart>
             </ResponsiveContainer>
+          </div>
+        </div>
+      ) : (
+        <div className="p-5 rounded-2xl bg-[#0d1322] border border-slate-800">
+          <h3 className="text-sm font-semibold text-white">Top Collections by Traded Volume</h3>
+          <p className="text-xs text-slate-400 mt-1">Aggregate ETH volume processed per collection</p>
+          <div className="h-32 w-full flex items-center justify-center text-slate-400 text-xs">
+            Insufficient data to display collection breakdown chart.
           </div>
         </div>
       )}

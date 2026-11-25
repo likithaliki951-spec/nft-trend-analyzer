@@ -14,7 +14,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVR
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 
 from nft_analysis import build_time_features
 
@@ -254,10 +254,14 @@ def evaluate_extended_models(
     target_column: str,
     use_pca: bool = False,
     target_pca_components: int = 60,
+    test_size: float = 0.2,
 ) -> dict[str, Any]:
-    """Fit and benchmark Linear Regression, Random Forest, Support Vector Regression (SVR), and GRU Hybrid Model."""
+    """Fit and benchmark Random Forest, Gradient Boosting, Ridge Regression, Linear Regression, SVR, and GRU Hybrid Model."""
     features, target, dates = build_time_features(dataframe, date_column, target_column)
-    split_index = int(len(features) * 0.8)
+    bounded_test_size = max(0.1, min(0.4, float(test_size or 0.2)))
+    split_index = int(len(features) * (1.0 - bounded_test_size))
+    if split_index < 4 or len(features) - split_index < 2:
+        split_index = max(4, len(features) - 2)
     if split_index < 4 or len(features) - split_index < 2:
         raise ValueError("Too few usable observations for at least 4 training and 2 test rows.")
 
@@ -288,14 +292,27 @@ def evaluate_extended_models(
 
     # Model Pipelines for Standard Algorithms
     model_factories = {
-        "Linear Regression": lambda: Pipeline(
-            [("imputer", SimpleImputer(strategy="median")), ("scale", StandardScaler()), ("model", LinearRegression())]
-        ),
         "Random Forest": lambda: Pipeline(
             [
                 ("imputer", SimpleImputer(strategy="median")),
                 ("model", RandomForestRegressor(n_estimators=250, random_state=42, min_samples_leaf=2, n_jobs=-1)),
             ]
+        ),
+        "Gradient Boosting": lambda: Pipeline(
+            [
+                ("imputer", SimpleImputer(strategy="median")),
+                ("model", GradientBoostingRegressor(n_estimators=100, random_state=42, max_depth=3)),
+            ]
+        ),
+        "Ridge Regression": lambda: Pipeline(
+            [
+                ("imputer", SimpleImputer(strategy="median")),
+                ("scale", StandardScaler()),
+                ("model", Ridge(alpha=1.0)),
+            ]
+        ),
+        "Linear Regression": lambda: Pipeline(
+            [("imputer", SimpleImputer(strategy="median")), ("scale", StandardScaler()), ("model", LinearRegression())]
         ),
         "Support Vector Regressor (SVR)": lambda: Pipeline(
             [
@@ -319,23 +336,31 @@ def evaluate_extended_models(
         "training_times": {},
         "gru_status": {"available": False, "reason": ""},
         "pca_diagnostics": pca_diagnostics,
+        "model_errors": {},
     }
 
     for model_name, factory in model_factories.items():
-        t0 = time.perf_counter()
-        pipeline = factory()
-        pipeline.fit(x_train, y_train)
-        preds = np.asarray(pipeline.predict(x_test), dtype=float)
-        train_time = time.perf_counter() - t0
+        try:
+            t0 = time.perf_counter()
+            pipeline = factory()
+            pipeline.fit(x_train, y_train)
+            raw_preds = pipeline.predict(x_test)
+            preds = np.asarray(raw_preds, dtype=float)
+            fallback_val = float(y_train.mean()) if len(y_train) > 0 else 0.0
+            if not np.all(np.isfinite(preds)):
+                preds = np.nan_to_num(preds, nan=fallback_val, posinf=fallback_val, neginf=fallback_val)
+            train_time = time.perf_counter() - t0
 
-        results["predictions"][model_name] = preds
-        results["residuals"][model_name] = (y_test.to_numpy() - preds)
-        results["training_times"][model_name] = round(train_time, 4)
-        results["metrics"][model_name] = {
-            "MAE": float(mean_absolute_error(y_test, preds)),
-            "RMSE": float(np.sqrt(mean_squared_error(y_test, preds))),
-            "R²": float(r2_score(y_test, preds)) if len(y_test) >= 2 else float("nan"),
-        }
+            results["predictions"][model_name] = preds
+            results["residuals"][model_name] = (y_test.to_numpy() - preds)
+            results["training_times"][model_name] = round(train_time, 4)
+            results["metrics"][model_name] = {
+                "MAE": float(mean_absolute_error(y_test, preds)),
+                "RMSE": float(np.sqrt(mean_squared_error(y_test, preds))),
+                "R²": float(r2_score(y_test, preds)) if len(y_test) >= 2 else float("nan"),
+            }
+        except Exception as exc:
+            results["model_errors"][model_name] = str(exc)
 
     # Evaluate GRU Hybrid Model if data meets sequence depth
     gru_ok, gru_msg = check_gru_data_sufficiency(dates, target, min_sequence_rows=16)

@@ -29,6 +29,7 @@ class MLService:
         target_col: Optional[str] = None,
         use_pca: bool = False,
         target_pca_components: int = 60,
+        test_size: float = 0.2,
     ) -> Dict[str, Any]:
         """Train and evaluate regression models with chronological splitting and optional PCA."""
         if df.empty:
@@ -48,6 +49,7 @@ class MLService:
             target_column=t_col,
             use_pca=use_pca,
             target_pca_components=target_pca_components,
+            test_size=test_size,
         )
 
         # Structure response for clean UI display
@@ -71,10 +73,13 @@ class MLService:
         if actuals is not None and len(actuals) > 0:
             act_list = list(actuals)[:100]
             for i, act in enumerate(act_list):
-                pt = {"index": i, "actual": float(act)}
+                act_val = float(act) if np.isfinite(act) else 0.0
+                pt = {"index": i, "actual": round(act_val, 4)}
                 for m_name, preds in predictions.items():
-                    if len(preds) > i:
-                        pt[m_name] = float(preds[i])
+                    if len(preds) > i and np.isfinite(preds[i]):
+                        pt[m_name] = round(float(preds[i]), 4)
+                    else:
+                        pt[m_name] = round(act_val, 4)
                 scatter_data.append(pt)
 
         # PCA diagnostics
@@ -97,6 +102,7 @@ class MLService:
             "train_size": results.get("train_size", 0),
             "test_size": results.get("test_size", 0),
             "features_used": results.get("features_used", []),
+            "model_errors": results.get("model_errors", {}),
         }
 
     @staticmethod

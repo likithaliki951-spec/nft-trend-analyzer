@@ -20,12 +20,12 @@ import {
 } from "lucide-react";
 
 const POPULAR_COLLECTIONS = [
-  { name: "Bored Ape Yacht Club", slug: "boredapeyachtclub", tag: "PFP Blue-Chip" },
-  { name: "CryptoPunks", slug: "cryptopunks", tag: "Historical Genesis" },
-  { name: "Mutant Ape Yacht Club", slug: "mutant-ape-yacht-club", tag: "Derivative PFP" },
-  { name: "Azuki", slug: "azuki", tag: "Anime Culture" },
-  { name: "Pudgy Penguins", slug: "pudgypenguins", tag: "IP & Consumer" },
-  { name: "Doodles", slug: "doodles-official", tag: "Community Art" },
+  { name: "Bored Ape Yacht Club", slug: "boredapeyachtclub", tag: "PFP Blue-Chip", contract: "0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D" },
+  { name: "CryptoPunks", slug: "cryptopunks", tag: "Historical Genesis", contract: "0xb47e3cd837dDF8e4c57F05d70Ab865de6e193BBB" },
+  { name: "Mutant Ape Yacht Club", slug: "mutant-ape-yacht-club", tag: "Derivative PFP", contract: "0x60E4d786628Fea6478F785A6d7e70474ff65292e" },
+  { name: "Azuki", slug: "azuki", tag: "Anime Culture", contract: "0xED5AF388653567Af2F388E6224dC7C31432C952d" },
+  { name: "Pudgy Penguins", slug: "pudgypenguins", tag: "IP & Consumer", contract: "0xBd3531dA5CF5857e7CfAA92426877b022e612cf8" },
+  { name: "Doodles", slug: "doodles-official", tag: "Community Art", contract: "0x8a90CAb2b38dba80c64b7734e58Ee1dB38B8992e" },
 ];
 
 export default function MarketplaceHubPage() {
@@ -109,13 +109,17 @@ export default function MarketplaceHubPage() {
   };
 
   const handleSelectCollection = async (slug: string) => {
+    if (slug === selectedSlug && collStats) return;
     setSelectedSlug(slug);
+    setCollStats(null);
     try {
       setLoadingColl(true);
       const res = await api.getCollectionStats(slug);
-      setCollStats(res.stats);
+      if (res && res.stats) {
+        setCollStats(res.stats);
+      }
     } catch (err: any) {
-      console.error(err);
+      console.error("Failed to load collection statistics:", err);
     } finally {
       setLoadingColl(false);
     }
@@ -155,6 +159,9 @@ export default function MarketplaceHubPage() {
   }
 
   const rate = ethPriceData?.rate_usd || 2800.0;
+  const activeColInfo = POPULAR_COLLECTIONS.find((c) => c.slug === selectedSlug);
+  const displayName = collStats?.name || activeColInfo?.name || selectedSlug;
+  const displayContract = collStats?.contract || activeColInfo?.contract || "0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D";
 
   return (
     <div className="max-w-6xl mx-auto space-y-8">
@@ -297,10 +304,14 @@ export default function MarketplaceHubPage() {
 
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800/80 mb-4">
             <div>
-              <span className="text-[10px] font-mono text-slate-400 uppercase">Selected Contract</span>
-              <h4 className="text-lg font-bold text-white capitalize">
-                {collStats?.slug?.replace(/-/g, " ") || selectedSlug}
+              <span className="text-[10px] font-mono text-slate-400 uppercase">Selected Collection</span>
+              <h4 className="text-lg font-bold text-white">
+                {displayName}
               </h4>
+              <p className="text-xs font-mono text-slate-400 mt-1 flex items-center gap-1.5">
+                <span className="text-slate-500">Contract:</span>
+                <span className="text-amber-400/90 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">{displayContract}</span>
+              </p>
             </div>
 
             <span
@@ -310,7 +321,7 @@ export default function MarketplaceHubPage() {
                   : "bg-amber-500/10 text-amber-400 border-amber-500/30"
               }`}
             >
-              {collStats?.source || "Verified Benchmark"}
+              {collStats?.source || (loadingColl ? "Fetching..." : "Verified Collection Benchmark (Fallback Data)")}
             </span>
           </div>
 
@@ -318,17 +329,17 @@ export default function MarketplaceHubPage() {
             <div className="p-3.5 rounded-lg bg-[#0b0f19] border border-slate-800">
               <span className="text-[10px] text-slate-400 block uppercase">Floor Price</span>
               <div className="text-lg font-bold text-amber-400 font-mono mt-0.5">
-                {collStats?.floor_price_eth ? `${collStats.floor_price_eth} ETH` : "12.50 ETH"}
+                {collStats?.floor_price_eth != null ? `${Number(collStats.floor_price_eth).toFixed(2)} ETH` : (loadingColl ? "Loading..." : "—")}
               </div>
               <span className="text-[10px] text-slate-500 block mt-0.5">
-                ≈ ${(Number(collStats?.floor_price_eth || 12.5) * rate).toLocaleString(undefined, { maximumFractionDigits: 0 })} USD
+                ≈ ${collStats?.floor_price_eth != null ? (Number(collStats.floor_price_eth) * rate).toLocaleString(undefined, { maximumFractionDigits: 0 }) : "—"} USD
               </span>
             </div>
 
             <div className="p-3.5 rounded-lg bg-[#0b0f19] border border-slate-800">
               <span className="text-[10px] text-slate-400 block uppercase">Total Supply</span>
               <div className="text-lg font-bold text-white font-mono mt-0.5">
-                {collStats?.total_supply?.toLocaleString() || "10,000"}
+                {collStats?.total_supply != null ? Number(collStats.total_supply).toLocaleString() : (loadingColl ? "Loading..." : "—")}
               </div>
               <span className="text-[10px] text-slate-500 block mt-0.5">Minted items</span>
             </div>
@@ -336,7 +347,7 @@ export default function MarketplaceHubPage() {
             <div className="p-3.5 rounded-lg bg-[#0b0f19] border border-slate-800">
               <span className="text-[10px] text-slate-400 block uppercase">Total Volume</span>
               <div className="text-lg font-bold text-sky-400 font-mono mt-0.5">
-                {collStats?.total_volume_eth?.toLocaleString() || "145,000"} ETH
+                {collStats?.total_volume_eth != null ? `${Number(collStats.total_volume_eth).toLocaleString(undefined, { maximumFractionDigits: 0 })} ETH` : (loadingColl ? "Loading..." : "—")}
               </div>
               <span className="text-[10px] text-slate-500 block mt-0.5">Historical turnover</span>
             </div>
@@ -344,7 +355,9 @@ export default function MarketplaceHubPage() {
             <div className="p-3.5 rounded-lg bg-[#0b0f19] border border-slate-800">
               <span className="text-[10px] text-slate-400 block uppercase">Implied Market Cap</span>
               <div className="text-lg font-bold text-emerald-400 font-mono mt-0.5">
-                ${((collStats?.floor_price_eth || 12.5) * (collStats?.total_supply || 10000) * rate).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                ${collStats?.floor_price_eth != null && collStats?.total_supply != null
+                  ? (Number(collStats.floor_price_eth) * Number(collStats.total_supply) * rate).toLocaleString(undefined, { maximumFractionDigits: 0 })
+                  : (loadingColl ? "Loading..." : "—")}
               </div>
               <span className="text-[10px] text-slate-500 block mt-0.5">USD Valuation</span>
             </div>

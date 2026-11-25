@@ -233,14 +233,23 @@ def get_opensea_collection_stats(collection_slug: str) -> dict[str, Any]:
             elif "stats" in collection and "floor_price" in collection["stats"]:
                 floor_price = collection["stats"]["floor_price"]
 
+            total_volume = None
+            if "total_volume" in collection:
+                total_volume = collection.get("total_volume")
+            elif "stats" in collection and "total_volume" in collection["stats"]:
+                total_volume = collection["stats"]["total_volume"]
+
             result = {
                 "status": "success",
                 "collection_slug": clean_slug,
                 "name": collection.get("name", clean_slug.title()),
                 "description": collection.get("description", "No description available.")[:250],
                 "floor_price": floor_price,
+                "floor_price_eth": floor_price,
                 "floor_price_symbol": "ETH",
                 "total_supply": collection.get("total_supply"),
+                "total_volume": total_volume,
+                "total_volume_eth": total_volume,
                 "retrieval_time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "source": "OpenSea API v2",
                 "is_cached": False,
